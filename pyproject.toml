@@ -17,6 +17,10 @@ classifiers = [
 # opt-in live smoke test to re-verify filter behaviour end to end.
 dependencies = [
     "httpx>=0.27",
+    # In-place terminal UI for `recommend-wizard`. The wizard also has a
+    # line-oriented fallback (--plain, or when stdout is not a screen) that works
+    # without Textual, so imports stay guarded in esimdb_checker.wizard.
+    "textual>=1.0",
 ]
 
 [project.optional-dependencies]

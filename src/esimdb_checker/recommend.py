@@ -1,15 +1,18 @@
-"""Build a recommendation report for an itinerary.
+"""Recommendation engine: compare COMPLETE strategies for a per-leg itinerary.
 
-Coverage model (authoritative): a plan is verified to cover a destination if it
-is listed on that destination's page. So a plan is eligible for an itinerary if
-its id appears on *every* itinerary destination's page — i.e. it is in the
-intersection of the per-destination plan id sets. This is esimdb.com's own
-coverage assertion and is far more reliable than parsing plan names. Plan-name
-coverage (coverage.py) is used only for labeling and to flag ambiguous scopes.
+Coverage model (authoritative): a plan covers a leg if it is listed on that leg's
+destination page (esimdb.com's own coverage assertion). Name-scope parsing is used
+only for labelling.
 
-Pipeline: fetch each destination's plans -> intersect id sets -> drop speed-cap
-plans (required, with reasons) -> drop unpurchasable -> rank survivors -> emit a
-Report (winners, excluded, unverified-coverage, totals, provenance).
+A *strategy* is a complete set of purchases that satisfies every leg:
+  - local_only : each leg is served by its own local plan (cheapest feasible per leg);
+  - whole_trip : one plan covers every leg (shared data pool, continuous validity);
+  - hybrid     : one regional plan serves a subset of whole legs, and local plans
+                 serve the rest.
+Shared regional data is counted once against the sum of the legs it serves (never
+per-country). A plan's validity must span the travel days of every leg it serves.
+The primary recommendation is the cheapest *price-comparable* feasible strategy;
+provider diversity is not used to override it.
 """
 
 from __future__ import annotations
@@ -20,8 +23,10 @@ from typing import Any, Optional
 
 import httpx
 
-from . import catalog, config, coverage as cov_mod, filters, geo
-from .models import Itinerary, Plan, Recommendation, Report
+from . import catalog, config, coverage as cov_mod, filters, fx as fx_mod, geo
+from .models import Country, Fx, Leg, Plan, Report, Strategy, StrategyPlan, Trip
+
+FAMILY_ORDER = ["local_only", "whole_trip", "hybrid"]
 
 
 class RecommendationEngine:
@@ -30,39 +35,52 @@ class RecommendationEngine:
         client: httpx.Client,
         data_dir: Path,
         use_cache: bool = True,
-        top_n: int = 5,
-        provider: Optional[str] = None,
         include_capped: bool = False,
+        provider: Optional[str] = None,
+        regional_candidate_limit: int = 60,
+        speed_verified: bool = False,
+        speed_note: Optional[str] = None,
     ) -> None:
         self.client = client
         self.data_dir = data_dir
         self.use_cache = use_cache
-        self.top_n = top_n
-        self.provider = provider.lower() if provider else None
         self.include_capped = include_capped
+        self.provider = provider.lower() if provider else None
+        self.regional_candidate_limit = regional_candidate_limit
+        self.speed_verified = speed_verified
+        self.speed_note = speed_note
         self.geo: Optional[geo.Geo] = None
+        self.fx: Optional[Fx] = None
         self.plans_by_slug: dict[str, list[Plan]] = {}
         self.plan_ids_by_slug: dict[str, set[str]] = {}
         self.plan_by_id: dict[str, Plan] = {}
         self.plan_slugs: dict[str, set[str]] = {}
         self.manifests: dict[str, dict[str, Any]] = {}
         self.source_urls: list[str] = []
+        self.fetch_status: dict[str, dict[str, Any]] = {}
 
     # ---- data loading -----------------------------------------------------
-    def load(self, itinerary: Itinerary) -> None:
+    def load(self, trip: Trip) -> None:
         self.geo = geo.Geo.load(self.client, self.data_dir, self.use_cache)
-        self.source_urls.extend(
-            [config.countries_endpoint(), config.regions_endpoint()]
-        )
+        self.fx = fx_mod.fetch_fx(self.client, trip.currency, self.data_dir, self.use_cache)
+        self.source_urls.extend([config.countries_endpoint(), config.regions_endpoint()])
         self.manifests.update(self.geo.manifests)
 
-        for slug in itinerary.slugs:
-            plans, manifest = catalog.fetch_country_plans(
-                self.client, slug, self.data_dir, self.use_cache
-            )
+        self.legs = [(i, leg) for i, leg in enumerate(trip.legs) if not leg.is_transfer]
+        self.leg_by_idx = {i: leg for i, leg in self.legs}
+        distinct_slugs = list(dict.fromkeys(leg.country.slug for _, leg in self.legs))
+        for slug in distinct_slugs:
+            try:
+                plans, manifest = catalog.fetch_country_plans(
+                    self.client, slug, self.data_dir, self.use_cache
+                )
+                self.fetch_status[slug] = {"ok": True, "count": len(plans)}
+                self.manifests[config.plans_endpoint(slug)] = manifest
+            except Exception as exc:  # noqa: BLE001
+                plans = []
+                self.fetch_status[slug] = {"ok": False, "count": 0, "error": str(exc)}
             self.plans_by_slug[slug] = plans
             self.plan_ids_by_slug[slug] = {p.id for p in plans}
-            self.manifests[config.plans_endpoint(slug)] = manifest
             self.source_urls.append(config.plans_endpoint(slug))
             self.source_urls.append(config.destination_page(slug))
 
@@ -75,219 +93,436 @@ class RecommendationEngine:
                     self.plan_slugs[p.id] = set()
                 self.plan_slugs[p.id].add(slug)
 
-    # ---- recommendation ---------------------------------------------------
-    def recommend(self, itinerary: Itinerary) -> Report:
-        assert self.geo is not None, "call load() first"
-        it_names = itinerary.names
-        pool_ids = set(self.plan_by_id)
-        for slug in itinerary.slugs:
-            pool_ids &= self.plan_ids_by_slug.get(slug, set())
+    # ---- predicates -------------------------------------------------------
+    def _covers_leg(self, plan: Plan, leg: Leg) -> bool:
+        return leg.country.slug in self.plan_slugs.get(plan.id, set())
 
-        if self.provider:
-            pool_ids = {
-                pid
-                for pid in pool_ids
-                if self.plan_by_id[pid].provider.lower() == self.provider
+    def _speed_ok(self, plan: Plan) -> bool:
+        return not (filters.speed_cap_reasons(plan) and not self.include_capped)
+
+    def _provider_ok(self, plan: Plan) -> bool:
+        return self.provider is None or plan.provider.lower() == self.provider
+
+    def _purchasable(self, plan: Plan) -> bool:
+        ok, _ = filters.purchasable(plan)
+        return ok
+
+    def _data_feasible(self, plan: Plan, legs: list[Leg], daily_target: float) -> bool:
+        """Shared data feasibility: one pool vs the SUM of the legs' needs."""
+        if plan.unlimited:
+            return True
+        if plan.is_daily_refill():
+            return (plan.daily_cap_gb or 0.0) >= daily_target - 1e-9
+        need = sum(l.required_gb for l in legs)
+        return plan.data_gb >= need - 1e-9
+
+    def _validity_info(self, plan: Plan, activation_day: int, legs: list[Leg]) -> tuple[bool, bool]:
+        """Return (hard_ok, unverified). hard_ok is False if the plan provably
+        expires before some leg ends. unverified is True if any served leg has an
+        unknown listed period."""
+        hard_ok = True
+        unverified = False
+        for leg in legs:
+            if plan.period_days > 0:
+                if activation_day + plan.period_days - 1 < leg.end_day:
+                    hard_ok = False
+            else:
+                unverified = True
+        return hard_ok, unverified
+
+    def _assumptions_for(self, plan: Plan, legs: list[Leg], activation_day: int, trip: Trip) -> list[str]:
+        out: list[str] = []
+        # A plan is activated once, at the earliest of the legs it serves (not
+        # separately per leg). Only note it when that day is not the trip start.
+        if activation_day > 1:
+            first = min(legs, key=lambda l: l.start_day)
+            out.append(
+                f"assumes '{plan.name}' is activated at travel day {activation_day} "
+                f"(arrival to {first.country.name}); activation terms: {plan.activation_type or 'unspecified'}"
+            )
+        if plan.period_days <= 0:
+            lo = min(l.start_day for l in legs)
+            hi = max(l.end_day for l in legs)
+            out.append(
+                f"assumes '{plan.name}' validity spans travel days {lo}\u2013{hi} (listed period unknown)"
+            )
+        return out
+
+    # ---- candidate generation --------------------------------------------
+    def _best_local_plan(self, leg: Leg, trip: Trip) -> Optional[tuple[Plan, float, list[str], bool]]:
+        cands: list[tuple[float, bool, Plan]] = []
+        for plan in self.plans_by_slug.get(leg.country.slug, []):
+            if not self._speed_ok(plan) or not self._provider_ok(plan) or not self._purchasable(plan):
+                continue
+            if not self._data_feasible(plan, [leg], trip.daily_data_gb):
+                continue
+            hard_ok, unverified = self._validity_info(plan, leg.start_day, [leg])
+            if not hard_ok:
+                continue
+            cost, comparable = plan.price_in(trip.currency, self.fx)
+            if not comparable:
+                continue
+            cands.append((cost, unverified, plan))
+        if not cands:
+            return None
+        cands.sort(key=lambda t: (t[0], t[1], -self.plan_by_id[t[2].id].provider_popularity))
+        cost, unverified, plan = cands[0]
+        assumptions = self._assumptions_for(plan, [leg], leg.start_day, trip)
+        return plan, cost, assumptions, not unverified
+
+    def _regional_candidates(self, trip: Trip) -> list[tuple[float, Plan, list[int]]]:
+        # Dedupe by the set of legs a plan is listed on, keeping only the cheapest
+        # data-feasible plan per coverage scope. This bounds the candidate set to
+        # the number of distinct scopes (<= 2^n - 1) and guarantees the cheapest
+        # plan for each scope survives. A plain cost cap would prune the larger,
+        # pricier plans needed to serve the whole trip in favour of small cheap
+        # ones that can't meet any leg's data need.
+        best: dict[frozenset, tuple[float, Plan, list[int]]] = {}
+        for pid, plan in self.plan_by_id.items():
+            if not self._speed_ok(plan) or not self._provider_ok(plan) or not self._purchasable(plan):
+                continue
+            covered = [i for i, _ in self.legs if self._covers_leg(plan, self.leg_by_idx[i])]
+            if len({self.leg_by_idx[i].country.key for i in covered}) < 2:
+                continue  # regional/whole plans cover >= 2 distinct leg countries
+            covered_legs = [self.leg_by_idx[i] for i in covered]
+            # The plan must be able to serve the full set of legs it is listed on,
+            # both for data and for validity (when activated at the earliest of
+            # those legs). Cheapest-per-scope with this guarantee lets the subset
+            # pass in _evaluate reuse it for any subset of that scope.
+            if not self._data_feasible(plan, covered_legs, trip.daily_data_gb):
+                continue
+            act = min(self.leg_by_idx[i].start_day for i in covered)
+            hard_ok, _ = self._validity_info(plan, act, covered_legs)
+            if not hard_ok:
+                continue
+            cost, comparable = plan.price_in(trip.currency, self.fx)
+            if not comparable:
+                continue
+            key = frozenset(covered)
+            cur = best.get(key)
+            rank = (cost, -self.plan_by_id[plan.id].provider_popularity)
+            if cur is None or rank < (cur[0], -self.plan_by_id[cur[1].id].provider_popularity):
+                best[key] = (cost, plan, covered)
+        cands = list(best.values())
+        cands.sort(key=lambda t: (t[0], -self.plan_by_id[t[1].id].provider_popularity))
+        return cands[: self.regional_candidate_limit]
+
+    @staticmethod
+    def _subsets(seq: list[int]) -> list[list[int]]:
+        n = len(seq)
+        out = []
+        for mask in range(1, 1 << n):
+            out.append([seq[j] for j in range(n) if mask & (1 << j)])
+        return out
+
+    # ---- strategy construction -------------------------------------------
+    @staticmethod
+    def _make_strategy(family: str, plans: list[StrategyPlan], total: float, trip: Trip, assumptions: list[str]) -> Strategy:
+        validity_ok = all(p.plan.period_days > 0 for p in plans)
+        return Strategy(
+            family=family,
+            plans=tuple(plans),
+            total_cost=total,
+            currency=trip.currency,
+            comparable=True,
+            meets_data=True,
+            validity_ok=validity_ok,
+            assumptions=_dedupe(assumptions),
+        )
+
+    def _evaluate(self, trip: Trip) -> dict[str, Optional[Strategy]]:
+        all_idx = [i for i, _ in self.legs]
+        local_picks: dict[int, Optional[tuple[Plan, float, list[str], bool]]] = {}
+        for i, leg in self.legs:
+            local_picks[i] = self._best_local_plan(leg, trip)
+
+        strategies: dict[str, Optional[Strategy]] = {
+            "local_only": None,
+            "whole_trip": None,
+            "hybrid": None,
+        }
+
+        # local-only
+        if all(local_picks[i] is not None for i in all_idx):
+            plans: list[StrategyPlan] = []
+            assumptions: list[str] = []
+            total = 0.0
+            for i in all_idx:
+                plan, cost, assump, _ = local_picks[i]
+                plans.append(
+                    StrategyPlan(
+                        plan=plan, legs=(i,), activation_day=self.leg_by_idx[i].start_day,
+                        cost=cost, comparable=True, assumptions=assump,
+                    )
+                )
+                assumptions += assump
+                total += cost
+            strategies["local_only"] = self._make_strategy("local_only", plans, total, trip, assumptions)
+
+        # whole-trip + hybrid from regional candidates
+        for cost, plan, covered in self._regional_candidates(trip):
+            for S in self._subsets(covered):
+                if not S:
+                    continue
+                act = min(self.leg_by_idx[i].start_day for i in S)
+                s_legs = [self.leg_by_idx[i] for i in S]
+                if not self._data_feasible(plan, s_legs, trip.daily_data_gb):
+                    continue
+                hard_ok, _ = self._validity_info(plan, act, s_legs)
+                if not hard_ok:
+                    continue
+                rest = [i for i in all_idx if i not in S]
+                if any(local_picks[i] is None for i in rest):
+                    continue
+                plans = [
+                    StrategyPlan(
+                        plan=plan, legs=tuple(sorted(S)), activation_day=act,
+                        cost=cost, comparable=True,
+                        assumptions=self._assumptions_for(plan, s_legs, act, trip),
+                    )
+                ]
+                assumptions = list(plans[0].assumptions)
+                total = cost
+                for i in rest:
+                    lplan, lcost, lassump, _ = local_picks[i]
+                    plans.append(
+                        StrategyPlan(
+                            plan=lplan, legs=(i,), activation_day=self.leg_by_idx[i].start_day,
+                            cost=lcost, comparable=True, assumptions=lassump,
+                        )
+                    )
+                    assumptions += lassump
+                    total += lcost
+                family = "whole_trip" if set(S) == set(all_idx) else "hybrid"
+                cand = self._make_strategy(family, plans, total, trip, assumptions)
+                cur = strategies[family]
+                if cur is None or _less(cand, cur):
+                    strategies[family] = cand
+
+        return strategies
+
+    # ---- budget -----------------------------------------------------------
+    @staticmethod
+    def _budget_status(recommended: Optional[Strategy], trip: Trip) -> dict[str, Any]:
+        budget = trip.budget
+        cost = recommended.total_cost if recommended else None
+        if budget is None:
+            return {
+                "budget": None,
+                "currency": trip.currency,
+                "cost": cost,
+                "within_original": True if cost is not None else False,
+                "relaxed": False,
+                "steps": 0,
+                "threshold": None,
+                "overspend": None,
+                "message": "No budget specified." if cost is not None else "No budget specified and no feasible strategy.",
             }
+        if cost is None:
+            return {
+                "budget": budget,
+                "currency": trip.currency,
+                "cost": None,
+                "within_original": False,
+                "relaxed": False,
+                "steps": 0,
+                "threshold": None,
+                "overspend": None,
+                "message": "No feasible strategy to compare against the budget.",
+            }
+        if cost <= budget:
+            return {
+                "budget": budget,
+                "currency": trip.currency,
+                "cost": cost,
+                "within_original": True,
+                "relaxed": False,
+                "steps": 0,
+                "threshold": budget,
+                "overspend": 0.0,
+                "message": f"Within the original budget of {_money(budget, trip.currency)}.",
+            }
+        # relax: compound 10% until budget >= cost
+        steps = 0
+        threshold = budget
+        while threshold < cost and steps < 1000:
+            threshold *= 1.1
+            steps += 1
+        overspend = cost - budget
+        msg = (
+            f"No eSIM strategy meeting your data requirement was found within your "
+            f"original budget of {_money(budget, trip.currency)}. These results are "
+            f"outside your budget cap."
+        )
+        return {
+            "budget": budget,
+            "currency": trip.currency,
+            "cost": cost,
+            "within_original": False,
+            "relaxed": steps > 0,
+            "steps": steps,
+            "threshold": threshold,
+            "overspend": overspend,
+            "message": msg,
+        }
 
+    # ---- diagnostics -------------------------------------------------------
+    def _diagnostics(self, trip: Trip, strategies: dict[str, Optional[Strategy]], local_picks: dict[int, Optional[Any]]) -> dict[str, Any]:
         excluded_speed_cap: list[dict[str, Any]] = []
         unpurchasable = 0
-        candidates: list[dict[str, Any]] = []
-        unverified: list[dict[str, Any]] = []
-
-        for pid in pool_ids:
-            plan = self.plan_by_id[pid]
+        seen_cap: set[str] = set()
+        for pid, plan in self.plan_by_id.items():
+            covers_any = any(self.leg_by_idx[i].country.slug in self.plan_slugs.get(pid, set()) for i, _ in self.legs)
+            if not covers_any:
+                continue
             cap_reasons = filters.speed_cap_reasons(plan)
-            if cap_reasons and not self.include_capped:
+            if cap_reasons and not self.include_capped and pid not in seen_cap:
+                price, _ = plan.price_in(trip.currency, self.fx)
                 excluded_speed_cap.append(
                     {
                         "id": pid,
                         "name": plan.name,
                         "provider": plan.provider,
-                        "usd_price": _round(plan.usd_price),
+                        "price": _round(price),
+                        "currency": trip.currency,
                         "reasons": cap_reasons,
-                        "listed_on": sorted(self.plan_slugs.get(pid, ())),
                     }
                 )
-                continue
-            ok, caveats = filters.purchasable(plan)
-            if not ok:
-                unpurchasable += 1
-                continue
-            capped = bool(cap_reasons)
-            if capped:
-                caveats.append("speed-capped: " + "; ".join(cap_reasons))
-            cov = cov_mod.resolve_coverage(plan.name, self.geo)
-            meets = filters.meets_data_need_for_days(plan, itinerary.data_gb, itinerary.days)
-            reasons_text: list[str] = [
-                f"covers all itinerary countries ({', '.join(it_names)})"
-            ]
-            # Cross-check: name scope vs itinerary.
-            if cov.codes and any(code not in cov.codes for code in itinerary.codes):
-                missing = [c for c in itinerary.codes if c not in cov.codes]
-                caveats.append(
-                    "plan name scope may not list "
-                    + ", ".join(missing)
-                    + " (still listed on those destination pages)"
-                )
-            if cov.status == "unverified":
-                caveats.append(
-                    "plan name does not state scope; verified via site listing on "
-                    f"all {len(itinerary.slugs)} destination page(s)"
-                )
-            elif cov.status == "partial":
-                caveats.append("name suggests a narrower/ambiguous scope (see label)")
-            if plan.unlimited:
-                reasons_text.append("unlimited data")
-            if plan.data_cap_per == "day":
-                reasons_text.append(
-                    f"daily allowance: {plan.data_cap_label()} (resets each day)"
-                )
-            period = plan.period_days
-            validity_ok = (period == 0) or (period >= itinerary.days)
-            if (not validity_ok) and period > 0:
-                caveats.append(
-                    f"valid only {period} day(s) but trip is {itinerary.days} — may expire mid-trip"
-                )
-            candidates.append(
-                {
-                    "plan": plan,
-                    "coverage": cov,
-                    "meets": meets,
-                    "validity_ok": validity_ok,
-                    "capped": capped,
-                    "caveats": caveats,
-                    "usd": plan.usd_price,
-                    "rank_usd": plan.usd_ranking_price(),
-                    "per_gb": plan.price_per_gb_usd(),
-                    "reasons": reasons_text,
-                }
-            )
-            if cov.status in ("unverified", "partial"):
-                unverified.append(
-                    {
-                        "id": pid,
-                        "name": plan.name,
-                        "provider": plan.provider,
-                        "status": cov.status,
-                        "label": cov.label,
-                        "note": cov.note,
-                    }
-                )
-
-        # ---- ranking -------------------------------------------------------
-        # Tier 0: meets the data need AND validity spans the trip.
-        # Tier 1: meets the data need but validity is short (may expire mid-trip).
-        # Tier 2: does not meet the data need (budget fallbacks).
-        def tier(c: dict[str, Any]) -> int:
-            if c["meets"] and c["validity_ok"]:
-                return 0
-            if c["meets"]:
-                return 1
-            return 2
-
-        def sort_key(c: dict[str, Any]):
-            period = c["plan"].period_days
-            return (
-                tier(c),
-                c["capped"],  # uncapped plans rank above capped at equal tier/price
-                c["rank_usd"] if c["rank_usd"] is not None else float("inf"),
-                c["per_gb"] if c["per_gb"] is not None else float("inf"),
-                -c["plan"].provider_popularity,
-                0 if period == 0 else -period,  # prefer longer validity at equal price
-                0 if c["plan"].unlimited else -(c["plan"].capacity_mb),
-            )
-
-        candidates.sort(key=sort_key)
-
-        meeting = [c for c in candidates if c["meets"]]
-        tier0 = [c for c in meeting if c["validity_ok"]]
-
-        def _best_by(keyfn):
-            vals = [c for c in tier0 if keyfn(c) is not None]
-            return min(vals, key=keyfn) if vals else None
-
-        cheapest = _best_by(lambda c: c["rank_usd"])
-        best_value = _best_by(lambda c: c["per_gb"])
-        unlimited_pick = next((c for c in tier0 if c["plan"].unlimited), None)
-
-        # Selection: lead with distinct providers (best plan per provider), then
-        # fill remaining slots with the next-best plans (may repeat a provider).
-        selected: list[dict[str, Any]] = []
-        seen_prov: set[str] = set()
-        for c in candidates:
-            prov = c["plan"].provider.lower()
-            if prov not in seen_prov:
-                selected.append(c)
-                seen_prov.add(prov)
-                if len(selected) >= self.top_n:
+                seen_cap.add(pid)
+                if len(excluded_speed_cap) >= 50:
                     break
-        if len(selected) < self.top_n:
-            chosen_ids = {id(c) for c in selected}
-            for c in candidates:
-                if id(c) not in chosen_ids:
-                    selected.append(c)
-                    if len(selected) >= self.top_n:
-                        break
+            if not filters.purchasable(plan)[0]:
+                unpurchasable += 1
 
-        winners: list[Recommendation] = []
-        for i, c in enumerate(selected, start=1):
-            plan = c["plan"]
-            reasons = list(c["reasons"])
-            tags: list[str] = []
-            if cheapest and plan.id == cheapest["plan"].id:
-                tags.append("cheapest plan that meets your data need and spans the trip")
-            if best_value and plan.id == best_value["plan"].id:
-                tags.append("best $/GB among plans that meet your data need")
-            if unlimited_pick and plan.id == unlimited_pick["plan"].id:
-                tags.append("unlimited data option")
-            reasons = tags + reasons
-            display_price, currency = plan.price_and_currency(itinerary.currency)
-            winners.append(
-                Recommendation(
-                    rank=i,
-                    plan=plan,
-                    coverage=c["coverage"],
-                    usd_price=_round(plan.usd_price),
-                    display_price=_round(display_price),
-                    currency=currency or "USD",
-                    price_per_gb=_round(plan.price_per_gb_usd()),
-                    meets_data_need=c["meets"],
-                    reasons=reasons,
-                    caveats=list(c["caveats"]),
-                    url=config.provider_page(plan.source_slug or itinerary.slugs[0], plan.provider_slug)
-                    if plan.provider_slug
-                    else config.destination_page(itinerary.slugs[0]),
+        # near-matches: per leg, the cheapest purchasable, non-speed-excluded plan that
+        # is data-feasible but provably expires before the leg ends.
+        near_matches: list[dict[str, Any]] = []
+        for i, leg in self.legs:
+            best_cost: Optional[float] = None
+            best_plan: Optional[Plan] = None
+            for plan in self.plans_by_slug.get(leg.country.slug, []):
+                if not self._provider_ok(plan) or not self._purchasable(plan):
+                    continue
+                if not self._speed_ok(plan):
+                    continue
+                if not self._data_feasible(plan, [leg], trip.daily_data_gb):
+                    continue
+                hard_ok, _ = self._validity_info(plan, leg.start_day, [leg])
+                if hard_ok:
+                    continue
+                cost, comparable = plan.price_in(trip.currency, self.fx)
+                if not comparable:
+                    continue
+                if best_cost is None or cost < best_cost:
+                    best_cost = cost
+                    best_plan = plan
+            if best_plan is not None:
+                near_matches.append(
+                    {
+                        "leg": leg.country.name,
+                        "plan": best_plan.name,
+                        "provider": best_plan.provider,
+                        "price": _round(best_cost),
+                        "currency": trip.currency,
+                        "reason": "expires before the leg ends (listed period too short)",
+                    }
                 )
-            )
 
-        fallback = self._fallback(itinerary) if not winners else []
+        # unservable legs: no local pick and not covered by any regional candidate
+        regional_covered: set[int] = set()
+        for _, plan, covered in self._regional_candidates(trip):
+            regional_covered.update(covered)
+        unservable = []
+        for i, leg in self.legs:
+            if local_picks.get(i) is None and i not in regional_covered:
+                unservable.append(leg.country.name)
+
+        fetch_failed = [s for s, st in self.fetch_status.items() if not st["ok"]]
+        return {
+            "excluded_speed_cap": excluded_speed_cap,
+            "unpurchasable_excluded": unpurchasable,
+            "near_matches": near_matches[:20],
+            "unservable_legs": unservable,
+            "fetch_failed_slugs": fetch_failed,
+        }
+
+    def _no_solution_reason(self, trip: Trip, strategies: dict[str, Optional[Strategy]], diag: dict[str, Any]) -> Optional[str]:
+        if any(strategies[k] is not None for k in FAMILY_ORDER):
+            return None
+        if diag["fetch_failed_slugs"]:
+            return "plan acquisition failed or was incomplete for: " + ", ".join(diag["fetch_failed_slugs"])
+        if diag["unservable_legs"]:
+            return (
+                "no plan in the acquired data can serve leg(s) "
+                + ", ".join(diag["unservable_legs"])
+                + " at the required data/validity — no compliant strategy at any price"
+            )
+        return "no price-comparable feasible strategy in the acquired data (check currency/FX availability)"
+
+    # ---- main -------------------------------------------------------------
+    def recommend(self, trip: Trip) -> Report:
+        assert self.geo is not None, "call load() first"
+        local_picks = {i: self._best_local_plan(leg, trip) for i, leg in self.legs}
+        strategies = self._evaluate(trip)
+        diag = self._diagnostics(trip, strategies, local_picks)
+        no_solution = self._no_solution_reason(trip, strategies, diag)
+
+        feasible = [s for s in strategies.values() if s is not None and s.comparable]
+        recommended: Optional[Strategy] = None
+        if feasible:
+            recommended = min(feasible, key=lambda s: (s.total_cost, s.purchase_count, FAMILY_ORDER.index(s.family)))
+
+        budget_status = self._budget_status(recommended, trip)
+
+        # fill plan URLs for every reported strategy
+        base_slug = self.legs[0][1].country.slug if self.legs else None
+        for s in list(strategies.values()) + ([recommended] if recommended else []):
+            if s is None:
+                continue
+            for sp in s.plans:
+                if base_slug is None:
+                    sp.url = None
+                elif sp.plan.provider_slug:
+                    sp.url = config.provider_page(
+                        sp.plan.source_slug or base_slug, sp.plan.provider_slug
+                    )
+                else:
+                    sp.url = config.destination_page(base_slug)
 
         totals = {
-            "destinations": len(itinerary.slugs),
+            "legs": len(trip.legs),
+            "distinct_countries": len(trip.distinct_countries),
             "unique_plans_scanned": len(self.plan_by_id),
-            "pool_covering_all_destinations": len(pool_ids),
-            "speed_cap_excluded": len(excluded_speed_cap),
-            "unpurchasable_excluded": unpurchasable,
-            "eligible_candidates": len(candidates),
-            "meeting_data_need": len(meeting),
-            "winners": len(winners),
-            "unverified_or_partial_name_coverage": len(unverified),
+            "plans_covering_all_legs": sum(
+                1
+                for pid in self.plan_by_id
+                if all(self.leg_by_idx[i].country.slug in self.plan_slugs.get(pid, set()) for i, _ in self.legs)
+            ),
+            "speed_cap_excluded": len(diag["excluded_speed_cap"]),
+            "unpurchasable_excluded": diag["unpurchasable_excluded"],
+            "regional_candidates_considered": len(self._regional_candidates(trip)),
+            "feasible_families": [k for k in FAMILY_ORDER if strategies[k] is not None],
         }
 
         notes = [
             "Read-only research tool: no purchases, logins, or activations.",
             "Data source: esimdb.com observed client JSON API (not a documented/stable public API).",
-            "Coverage is verified by a plan being listed on every itinerary destination page.",
-            "Speed-cap plans are excluded by design; reasons are listed in excluded_speed_cap.",
-            "Prices are as listed on the site at capture time and may change; confirm before purchase.",
-            f"Requested currency: {itinerary.currency}; USD shown where the currency is unavailable.",
+            "Coverage verified by a plan being listed on every leg's destination page.",
+            "Prices are as listed at capture time and may change; confirm before purchase.",
+            f"Requested currency: {trip.currency}; ranking, budget, and totals all use this currency.",
         ]
+        if no_solution:
+            notes.insert(0, f"No feasible strategy: {no_solution}.")
+        fx_note = self.fx.note if self.fx else ""
+        if fx_note:
+            notes.append(f"FX: {fx_note}")
+
+        speed_status = self._speed_filter_status(trip)
 
         return Report(
-            itinerary=itinerary,
+            trip=trip,
             generated_at=datetime.now(timezone.utc).isoformat(),
-            source_urls=dedup(self.source_urls),
+            source_urls=_dedupe(self.source_urls),
             snapshot_manifest={
                 url: {
                     "path": str(self.data_dir / _key_path(m["url"])),
@@ -298,42 +533,61 @@ class RecommendationEngine:
                 }
                 for url, m in self.manifests.items()
             },
+            fx=self.fx.to_dict() if self.fx else {"available": False},
+            recommended=recommended,
+            strategies=strategies,
+            budget_status=budget_status,
+            diagnostics=diag,
             totals=totals,
-            winners=winners,
-            excluded_speed_cap=excluded_speed_cap[:50],
-            unverified_coverage=unverified[:50],
-            fallback=fallback,
+            speed_filter_status=speed_status,
             notes=notes,
         )
 
-    # ---- fallback when nothing covers the whole itinerary -----------------
-    def _fallback(self, itinerary: Itinerary) -> list[dict[str, Any]]:
-        slug_name = {c.slug: c.name for c in (self.geo.countries if self.geo else [])}
-        out: list[dict[str, Any]] = []
-        for slug in itinerary.slugs:
-            plans = self.plans_by_slug.get(slug, [])
-            best: Optional[Plan] = None
-            for p in plans:
-                if filters.speed_cap_reasons(p):
-                    continue
-                ok, _ = filters.purchasable(p)
-                if not ok:
-                    continue
-                best = p
-                break
-            if best is None:
-                continue
-            out.append(
-                {
-                    "destination": slug_name.get(slug, slug),
-                    "slug": slug,
-                    "plan": best.name,
-                    "provider": best.provider,
-                    "usd_price": _round(best.usd_price),
-                    "note": "best purchasable non-speed-capped plan on this destination page",
-                }
+    def _speed_filter_status(self, trip: Trip) -> dict[str, Any]:
+        if self.speed_verified:
+            return {
+                "requirement": "uncapped eSIMs (esimdb built-in 'Hide plans with speed caps')",
+                "mode": "verified_site_toggle",
+                "verified": True,
+                "include_capped": self.include_capped,
+                "note": self.speed_note or "verified against the site's built-in speed-cap toggle",
+            }
+        note = (
+            "Speed-capped plans excluded via a LOCAL PREDICATE on the API's speed fields "
+            "(speedLimit/reducedSpeed/possibleThrottling). This is a safeguard, NOT the "
+            "site's built-in 'Hide plans with speed caps' toggle; that toggle was not exercised."
+        )
+        if self.include_capped:
+            note += (
+                "  --include-capped was explicitly set: speed-capped plans are INCLUDED, so this run "
+                "does NOT satisfy the strict uncapped requirement."
             )
-        return out
+        return {
+            "requirement": "uncapped eSIMs (esimdb built-in 'Hide plans with speed caps')",
+            "mode": "local_predicate",
+            "verified": False,
+            "include_capped": self.include_capped,
+            "note": note,
+        }
+
+
+# ---- helpers --------------------------------------------------------------
+def _less(a: Strategy, b: Strategy) -> bool:
+    return (a.total_cost, a.purchase_count, FAMILY_ORDER.index(a.family)) < (
+        b.total_cost,
+        b.purchase_count,
+        FAMILY_ORDER.index(b.family),
+    )
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for i in items:
+        if i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
 
 
 def _round(x: Optional[float]) -> Optional[float]:
@@ -343,14 +597,9 @@ def _round(x: Optional[float]) -> Optional[float]:
     return int(r) if r == int(r) else r
 
 
-def dedup(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for i in items:
-        if i not in seen:
-            seen.add(i)
-            out.append(i)
-    return out
+def _money(v: float, currency: str) -> str:
+    sym = {"EUR": "€", "USD": "$", "GBP": "£"}.get(currency, currency + " ")
+    return f"{sym}{v:,.2f}"
 
 
 def _key_path(url: str) -> str:

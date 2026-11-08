@@ -2,11 +2,34 @@
 
 from __future__ import annotations
 
-import respx
+import io
 
 from esimdb_checker import config
 from esimdb_checker.geo import Geo
 from esimdb_checker.models import Country
+
+
+class FakeStream(io.StringIO):
+    """A StringIO that reports itself as (or as not) a TTY, for CLI dispatch tests."""
+
+    def __init__(self, text: str = "", tty: bool = False):
+        super().__init__(text)
+        self._tty = tty
+
+    def isatty(self) -> bool:  # noqa: D102
+        return self._tty
+
+
+def feed(answers):
+    """Turn a list into an `ask` callable that raises EOFError when exhausted (like stdin)."""
+    it = iter(answers)
+
+    def ask():
+        try:
+            return next(it)
+        except StopIteration:
+            raise EOFError from None
+    return ask
 
 
 def make_country(code: str, name: str, slug: str, region: str = "europe", popularity: int = 100) -> dict:
@@ -129,3 +152,11 @@ def mock_geo_routes(router, countries=DEFAULT_COUNTRIES, regions=DEFAULT_REGIONS
 
 def mock_plans_route(router, slug: str, payload: dict):
     router.get(config.plans_endpoint(slug)).respond(200, json=payload)
+
+
+def mock_fx_route(router, currency: str = "EUR", rate: float = 0.92):
+    """Mock the Frankfurter FX endpoint for `currency` (rate = 1 USD -> rate units)."""
+    router.get(config.fx_endpoint(currency)).respond(
+        200,
+        json={"amount": 1.0, "base": "USD", "date": "2024-06-01", "rates": {currency: rate}},
+    )

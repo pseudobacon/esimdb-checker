@@ -48,6 +48,17 @@ def provider_page(country_slug: str, provider_slug: str) -> str:
     return f"{BASE_URL}/{country_slug}/{provider_slug}"
 
 
+# FX conversion source. Frankfurter exposes the European Central Bank reference
+# rates (free, no key) and includes the rate date. We always convert from USD so
+# every plan's always-present USD price is comparable in the requested currency.
+FX_BASE = "https://api.frankfurter.app"
+FX_STALE_AFTER_HOURS = 12.0
+
+
+def fx_endpoint(currency: str) -> str:
+    return f"{FX_BASE}/latest?from=USD&to={currency.upper()}"
+
+
 def data_dir(default: str = ".cache") -> Path:
     """Resolve the snapshot directory: $ESIMDB_DATA_DIR > default (CWD-relative)."""
     override = os.environ.get("ESIMDB_DATA_DIR")

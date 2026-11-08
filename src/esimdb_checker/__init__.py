@@ -1,5 +1,5 @@
 """esimdb_checker — research travel eSIM plans on esimdb.com and recommend a
-whole-itinerary purchase strategy.
+complete purchase strategy for a per-leg travel itinerary.
 
 Research/recommend only: this package performs read-only GET requests against the
 structured JSON endpoints the esimdb.com website uses, and prints recommendations.
@@ -8,16 +8,27 @@ It never logs in, buys, or activates anything.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-from .models import Country, Itinerary, Plan, Coverage, Recommendation, Report
+from .models import (
+    Country,
+    Fx,
+    Leg,
+    Plan,
+    Report,
+    Strategy,
+    StrategyPlan,
+    Trip,
+)
 
 __all__ = [
     "__version__",
     "Country",
-    "Itinerary",
+    "Fx",
+    "Leg",
     "Plan",
-    "Coverage",
-    "Recommendation",
     "Report",
+    "Strategy",
+    "StrategyPlan",
+    "Trip",
 ]

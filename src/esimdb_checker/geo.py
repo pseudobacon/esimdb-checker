@@ -75,7 +75,7 @@ class Geo:
                     name=c.get("name", ""),
                     slug=c.get("slug", ""),
                     region=c.get("region"),
-                    subregions=list(c.get("subregions") or []),
+                    subregions=tuple(c.get("subregions") or []),
                     popularity=int(c.get("popularity") or 0),
                 )
             )
@@ -113,6 +113,24 @@ class Geo:
         if tl in self._by_alias:
             return self._by_alias[tl]
         return None
+
+    def candidates(self, token: str) -> list[Country]:
+        """Countries whose name/code/slug (or a known alias) contains the token,
+        for disambiguation in the wizard. Stable catalog order."""
+        t = token.strip().lower()
+        if not t:
+            return []
+        out: list[Country] = []
+        seen: set[str] = set()
+        for c in self.countries:
+            if t in c.name.lower() or t in c.code.lower() or t in c.slug:
+                out.append(c)
+                seen.add(c.code)
+        for alias, c in self._by_alias.items():
+            if t in alias and c.code not in seen:
+                out.append(c)
+                seen.add(c.code)
+        return out
 
     def region_codes_for(self, slug: str) -> set[str]:
         return self.region_codes.get(slug, set())

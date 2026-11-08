@@ -15,6 +15,7 @@ from conftest import (
     build_plan_entry,
     build_plans_payload,
     make_provider,
+    mock_fx_route,
     mock_geo_routes,
     mock_plans_route,
 )
@@ -27,12 +28,12 @@ def _recommend_payload() -> dict:
     return build_plans_payload(
         [
             build_plan_entry(
-                plan_id="eu-10",
+                plan_id="eu-20",
                 provider=P1,
-                name="Europe 10GB/30Days",
-                capacity_mb=10000,
+                name="Europe 20GB/30Days",
+                capacity_mb=20000,
                 period_days=30,
-                prices={"USD": 20.0, "EUR": 19.0},
+                prices={"USD": 25.0, "EUR": 24.0},
             )
         ]
     )
@@ -41,19 +42,23 @@ def _recommend_payload() -> dict:
 def test_recommend_json_output(tmp_path, capsys):
     with respx.mock(assert_all_called=False) as router:
         mock_geo_routes(router)
+        mock_fx_route(router, "EUR", 0.92)
         mock_plans_route(router, "spain", _recommend_payload())
         rc = main([
             "--data-dir", str(tmp_path),
             "recommend", "spain",
-            "--json", "--no-cache", "--top", "2",
-            "--days", "9", "--data-gb", "10", "--currency", "EUR",
+            "--json", "--refresh",
+            "--days", "9", "--daily-data", "1.5", "--currency", "EUR",
         ])
     assert rc == 0
     out = capsys.readouterr().out
     data = json.loads(out)
-    assert "winners" in data and "itinerary" in data and "totals" in data
-    assert data["winners"], "expected at least one recommendation"
-    assert data["winners"][0]["plan"]["id"] == "eu-10"
+    assert set(data["strategies"]) == {"local_only", "whole_trip", "hybrid"}
+    assert data["itinerary"]["total_days"] == 9
+    assert data["itinerary"]["legs"][0]["country"] == "Spain"
+    assert data["recommended"] is not None
+    assert data["recommended"]["family"] in {"local_only", "whole_trip", "hybrid"}
+    assert data["recommended"]["plans"][0]["plan"] == "Europe 20GB/30Days"
 
 
 def test_unknown_country_returns_nonzero(tmp_path, capsys):
