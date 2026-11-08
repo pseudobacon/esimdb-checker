@@ -1,0 +1,61 @@
+[project]
+name = "esimdb-checker"
+version = "0.1.0"
+description = "Research travel eSIM plans on esimdb.com and recommend a whole-itinerary purchase strategy (research/recommend only — never buys or activates)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Chris Wong" }]
+keywords = ["esim", "travel", "esimdb", "cli", "httpx"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console",
+]
+# The application reads the structured JSON responses the esimdb.com Nuxt client
+# fetches during a normal page load (documented in docs/ARCHITECTURE.md). It does
+# NOT require a browser; playwright is an *optional* extra used only by the
+# opt-in live smoke test to re-verify filter behaviour end to end.
+dependencies = [
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+live = [
+    "playwright>=1.40",
+]
+
+[project.scripts]
+esimdb-checker = "esimdb_checker.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/esimdb_checker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "live: opt-in live integration test against esimdb.com (skipped unless --live is passed)",
+    "slow: slower end-to-end tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "respx>=0.20",
+    "ruff>=0.4",
+]
