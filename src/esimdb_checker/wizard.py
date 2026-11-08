@@ -264,10 +264,14 @@ def _plain_destinations(state: WizardState, geo, ask, out) -> None:
         else:
             token = _ask(
                 ask, out,
-                "Add [d]estination, [t]ransfer, [e]dit, [r]emove — or press Enter to finish",
+                "Add [d]estination, [t]ransfer, [e]dit, [r]emove — or press Enter to finish\n"
+                "  (or just type a country, e.g. Thailand — menu words are whole words)",
             )
         low = token.strip().lower()
-        if low == "":
+        # Menu words are matched EXACTLY. Matching on the first letter would turn
+        # ordinary country names into commands: "thailand" -> [t]ransfer,
+        # "estonia" -> [e]dit, "romania" -> [r]emove.
+        if low in FINISH_WORDS:
             if first:
                 out("  enter a destination to start (name, ISO code, or slug).")
                 continue
@@ -275,12 +279,7 @@ def _plain_destinations(state: WizardState, geo, ask, out) -> None:
                 return
             out("  add at least one destination leg with days > 0 before continuing.")
             continue
-        if low[0] == "n" and len(low) <= 4:
-            if state.charged():
-                return
-            out("  add at least one destination leg with days > 0 before continuing.")
-            continue
-        if low[0] == "e":
+        if low in EDIT_WORDS:
             idx = _ask_leg_index(state, ask, out, "Which leg to edit?")
             if idx is not None:
                 leg = state.legs[idx]
@@ -294,19 +293,23 @@ def _plain_destinations(state: WizardState, geo, ask, out) -> None:
                     out("  transfer legs cannot be edited — remove it and add a new one.")
             first = False
             continue
-        if low[0] == "r":
+        if low in REMOVE_WORDS:
             idx = _ask_leg_index(state, ask, out, "Which leg to remove?")
             if idx is not None:
                 out(f"  removed: {state.legs[idx].label}")
                 state.remove_leg(idx)
             first = False
             continue
-        if low[0] == "t":
+        if low in TRANSFER_WORDS:
             t = _ask_int_loop(ask, out, "Transfer days (0 = uncharged marker only)", 0, 0)
             state.add_transfer(t)
             out(f"  added transfer leg ({t} day(s), not charged)")
             first = False
             continue
+        if low in ADD_WORDS:
+            # explicit "add a destination": ask for the name instead of guessing one
+            token = _ask(ask, out, "Destination (country name, ISO code, or slug)")
+            low = token.strip().lower()
         # Anything else is treated as a destination name/code/slug.
         c, err = _resolve(geo, token)
         if err is not None:
@@ -418,6 +421,20 @@ def run_plain_wizard(
     except StopError as e:
         out(f"  wizard aborted: {e}")
         return WizardResult(trip=None, cancelled=True, save_path=None)
+
+
+# ---------------------------------------------------------------------------
+# Plain front-end menu words
+# ---------------------------------------------------------------------------
+# Matched exactly (case-insensitively) - never by first letter. First-letter
+# matching silently turned country names into commands: "thailand" -> [t]ransfer,
+# "estonia" -> [e]dit, "romania"/"russia" -> [r]emove, "denmark" -> [d]estination.
+# Anything that is not one of these words is a destination name/code/slug.
+FINISH_WORDS = frozenset({"", "n", "no", "done", "finish", "next", "ok"})
+ADD_WORDS = frozenset({"d", "add", "dest", "destination", "new", "leg"})
+TRANSFER_WORDS = frozenset({"t", "tr", "transfer", "transit"})
+EDIT_WORDS = frozenset({"e", "ed", "edit", "change", "modify"})
+REMOVE_WORDS = frozenset({"r", "rm", "remove", "delete", "del"})
 
 
 # ---------------------------------------------------------------------------

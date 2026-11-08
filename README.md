@@ -193,6 +193,11 @@ prints the non-interactive equivalents (`recommend --stop …` / `recommend --it
 with `--plain` explicitly requested, a pipe or file of answers is read instead, ending
 cleanly at EOF.
 
+In the plain interview the menu words (`d`/`add`, `t`/`transfer`, `e`/`edit`, `r`/`remove`,
+`n`/Enter to finish) are matched as **whole words**, so a country is never mistaken for a
+command — typing `Thailand` adds a Thailand leg, it does not mean `[t]ransfer`. Anything
+that is not a menu word is resolved as a destination name, ISO code, or slug.
+
 | Option | Meaning |
 | --- | --- |
 | `--itinerary FILE` | start from a saved itinerary and edit it |
@@ -225,7 +230,7 @@ it).
 ## Testing
 
 ```bash
-uv run pytest                 # 132 offline tests (mocked API + headless TUI), no network
+uv run pytest                 # 142 offline tests (mocked API + headless TUI), no network
 uv run ruff check src tests   # lint
 ```
 

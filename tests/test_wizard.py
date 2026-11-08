@@ -37,11 +37,35 @@ def P(*legs, finish="", currency="", budget="", daily="", search="y", save=""):
 TAIL = ["", "", "", ""]
 
 
-def _run(answers, save_path=None, overwrite=False, state=None):
+def _geo_with_menu_letter_names():
+    """Fake geo plus countries whose names collide with the menu letters."""
+    from esimdb_checker.geo import Geo
+    from esimdb_checker.models import Country
+    g = make_geo()
+    extra = [
+        Country(code="TH", name="Thailand", slug="thailand", region="asia",
+                subregions=[], popularity=90),
+        Country(code="TR", name="Türkiye", slug="turkey", region="europe",
+                subregions=[], popularity=88),
+        Country(code="EE", name="Estonia", slug="estonia", region="europe",
+                subregions=[], popularity=70),
+        Country(code="RO", name="Romania", slug="romania", region="europe",
+                subregions=[], popularity=75),
+        Country(code="RU", name="Russia", slug="russia", region="europe",
+                subregions=[], popularity=80),
+        Country(code="DK", name="Denmark", slug="denmark", region="europe",
+                subregions=[], popularity=65),
+    ]
+    return Geo(countries=list(g.countries) + extra,
+               region_codes=dict(g.region_codes),
+               region_alias=dict(g.region_alias))
+
+
+def _run(answers, save_path=None, overwrite=False, state=None, geo=None):
     """Drive the plain wizard; returns (result, transcript_lines)."""
     out: list[str] = []
     result = run_plain_wizard(
-        make_geo(), state or WizardState(), feed(answers), out.append,
+        geo or make_geo(), state or WizardState(), feed(answers), out.append,
         save_path=save_path, overwrite=overwrite,
     )
     return result, out
@@ -396,3 +420,47 @@ def test_a_path_answer_still_saves_where_the_user_asked(tmp_path):
     target = tmp_path / "sub" / "trip.json"
     result, _ = _run(P(("spain", 4, 0), save=str(target)))
     assert result.save_path == target and target.exists()
+
+
+# --------------------------------------------------------------------------
+# Menu words are matched exactly: country names must never become commands.
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("country,expected", [
+    ("thailand", "Thailand"), ("Thailand", "Thailand"), ("turkey", "Türkiye"),
+    ("togo", None),                     # unknown name: reported, not taken as a command
+    ("estonia", "Estonia"), ("romania", "Romania"), ("russia", "Russia"),
+    ("denmark", "Denmark"),
+])
+def test_country_names_that_start_with_a_menu_letter_stay_destinations(country, expected):
+    """Once one leg exists, a bare country name must not read as t/e/r/d."""
+    answers = ["spain", "3", "0", country, "5", "0"] + TAIL + ["y", ""]
+    result, out = _run(answers, geo=_geo_with_menu_letter_names())
+    transcript = "\n".join(out)
+    if expected is None:
+        assert "no country matches" in transcript
+        assert not any(leg.country is None for leg in result.trip.legs)
+        return
+    assert not result.cancelled
+    legs = result.trip.legs
+    assert not [leg for leg in legs if leg.country is None], f"{country} became a transfer marker"
+    assert [leg.country.name for leg in legs] == ["Spain", expected], legs
+    assert result.trip.total_days == 8
+
+
+def test_the_menu_words_still_work_when_spelled_out():
+    answers = ["spain", "3", "0",
+               "transfer", "2",          # t
+               "edit", "1", "6", "0",    # e
+               "remove", "2",            # r
+               "add", "france", "4", "1"] + TAIL + ["y", ""]
+    result, out = _run(answers)
+    assert not result.cancelled
+    legs = result.trip.legs
+    assert [leg.country.name if leg.country else "transfer" for leg in legs] == [
+        "Spain", "France"]
+    assert legs[0].days == 6 and legs[1].days == 4 and legs[1].transfer_days == 1
+
+
+def test_bare_n_finishes_the_destination_stage():
+    result, _ = _run(["spain", "3", "0", "n"] + TAIL + ["y", ""])
+    assert not result.cancelled and result.trip.total_days == 3
