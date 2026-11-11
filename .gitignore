@@ -13,6 +13,40 @@ test-results/
 playwright-report/
 .blob/
 .browsers/
+.playwright/
+
+# Browser profiles / session data (never commit cookies or logins)
+chrome-profile/
+chromium-profile/
+user-data-dir/
+.cookies
+cookies*.json
+state.json
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local itineraries contain real travel plans (destinations + day counts) - never publish
+itinerary.json
+*.itinerary.json
+itineraries/
+trips/
+
+# Generated recommendation reports
+report.md
+report.json
+*.report.md
+*.report.json
+
+# Debug scratch
+*.log
+*.out
+scratch/
+tmp/
 
 # Caches / captured artifacts (never commit large captures)
 .cache/

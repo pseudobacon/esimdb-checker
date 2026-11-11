@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import httpx
 
@@ -40,11 +40,17 @@ class RecommendationEngine:
         regional_candidate_limit: int = 60,
         speed_verified: bool = False,
         speed_note: Optional[str] = None,
+        strict_speed_cap: bool = False,
     ) -> None:
         self.client = client
         self.data_dir = data_dir
         self.use_cache = use_cache
         self.include_capped = include_capped
+        # Speed policy. Default: exclude plans throttled *from the first byte*, keep
+        # plans that throttle only once the allowance is spent - a plan that already
+        # meets the trip's data need can never reach that throttle. strict_speed_cap
+        # restores the old rule (exclude both); include_capped admits everything.
+        self.strict_speed_cap = strict_speed_cap
         self.provider = provider.lower() if provider else None
         self.regional_candidate_limit = regional_candidate_limit
         self.speed_verified = speed_verified
@@ -60,7 +66,12 @@ class RecommendationEngine:
         self.fetch_status: dict[str, dict[str, Any]] = {}
 
     # ---- data loading -----------------------------------------------------
-    def load(self, trip: Trip) -> None:
+    def load(self, trip: Trip, progress: Optional[Callable[[int, int, str], None]] = None) -> None:
+        """Fetch everything the report needs.
+
+        ``progress(step, total, label)`` is called before each destination's plan
+        fetch, so an interactive front-end can show what it is waiting on.
+        """
         self.geo = geo.Geo.load(self.client, self.data_dir, self.use_cache)
         self.fx = fx_mod.fetch_fx(self.client, trip.currency, self.data_dir, self.use_cache)
         self.source_urls.extend([config.countries_endpoint(), config.regions_endpoint()])
@@ -69,7 +80,12 @@ class RecommendationEngine:
         self.legs = [(i, leg) for i, leg in enumerate(trip.legs) if not leg.is_transfer]
         self.leg_by_idx = {i: leg for i, leg in self.legs}
         distinct_slugs = list(dict.fromkeys(leg.country.slug for _, leg in self.legs))
-        for slug in distinct_slugs:
+        names = {}
+        for _, leg in self.legs:
+            names.setdefault(leg.country.slug, leg.country.name)
+        for step, slug in enumerate(distinct_slugs, 1):
+            if progress is not None:
+                progress(step, len(distinct_slugs), names.get(slug, slug))
             try:
                 plans, manifest = catalog.fetch_country_plans(
                     self.client, slug, self.data_dir, self.use_cache
@@ -98,7 +114,14 @@ class RecommendationEngine:
         return leg.country.slug in self.plan_slugs.get(plan.id, set())
 
     def _speed_ok(self, plan: Plan) -> bool:
-        return not (filters.speed_cap_reasons(plan) and not self.include_capped)
+        """Default: keep plans that throttle only after their allowance is spent - one
+        that already meets the trip's data need cannot reach that throttle. See
+        `filters.speed_cap_signals` for how the two classes are told apart."""
+        if self.include_capped:
+            return True
+        if self.strict_speed_cap:
+            return not filters.speed_cap_reasons(plan)
+        return not filters.always_throttled(plan)
 
     def _provider_ok(self, plan: Plan) -> bool:
         return self.provider is None or plan.provider.lower() == self.provider
@@ -145,6 +168,13 @@ class RecommendationEngine:
             hi = max(l.end_day for l in legs)
             out.append(
                 f"assumes '{plan.name}' validity spans travel days {lo}\u2013{hi} (listed period unknown)"
+            )
+        phrase = filters.after_cap_phrase(plan)
+        if phrase:
+            out.append(
+                f"'{plan.name}' is accepted despite a speed cap because the throttle starts only "
+                f"once the allowance is spent ({phrase}); the data this strategy needs fits inside "
+                f"the full-speed allowance"
             )
         return out
 
@@ -368,31 +398,69 @@ class RecommendationEngine:
 
     # ---- diagnostics -------------------------------------------------------
     def _diagnostics(self, trip: Trip, strategies: dict[str, Optional[Strategy]], local_picks: dict[int, Optional[Any]]) -> dict[str, Any]:
-        excluded_speed_cap: list[dict[str, Any]] = []
+        """Bucket each covering plan under the reason that actually rules it out.
+
+        A plan is counted once, in the order the checks that would keep it out even if
+        the *next* filter were relaxed: provider filter -> purchasability -> data need
+        -> speed cap. So a "1 Day / Daily 500MB" plan on a 1.5 GB/day trip is reported
+        as data-insufficient, not as a cap exclusion: relaxing the cap with
+        --include-capped could never admit it, and listing it under the cap made the
+        exclusions look like candidates that only the strict filter was hiding.
+
+        The cap bucket holds only plans throttled *from the first byte* (explicit
+        speedLimit, or the site's possibleThrottling flag). A plan that throttles only
+        once its allowance is spent (reducedSpeed) is a normal candidate, so it is
+        counted as admitted - or, under --strict-speed-cap, as excluded.
+        """
+        excluded_always_throttled: list[dict[str, Any]] = []
+        throttled_total = 0
+        data_total = 0
         unpurchasable = 0
-        seen_cap: set[str] = set()
+        off_provider = 0
+        after_cap_admitted = 0
+        after_cap_excluded_strict = 0
+        seen_throttled: set[str] = set()
         for pid, plan in self.plan_by_id.items():
-            covers_any = any(self.leg_by_idx[i].country.slug in self.plan_slugs.get(pid, set()) for i, _ in self.legs)
-            if not covers_any:
+            covered = [lg for i, lg in self.legs
+                       if self.leg_by_idx[i].country.slug in self.plan_slugs.get(pid, set())]
+            if not covered:
                 continue
-            cap_reasons = filters.speed_cap_reasons(plan)
-            if cap_reasons and not self.include_capped and pid not in seen_cap:
-                price, _ = plan.price_in(trip.currency, self.fx)
-                excluded_speed_cap.append(
-                    {
-                        "id": pid,
-                        "name": plan.name,
-                        "provider": plan.provider,
-                        "price": _round(price),
-                        "currency": trip.currency,
-                        "reasons": cap_reasons,
-                    }
-                )
-                seen_cap.add(pid)
-                if len(excluded_speed_cap) >= 50:
-                    break
-            if not filters.purchasable(plan)[0]:
+            if not self._provider_ok(plan):
+                off_provider += 1
+                continue
+            if not self._purchasable(plan):
                 unpurchasable += 1
+                continue
+            # Usable at all => it could serve at least one of the legs it covers.
+            if not any(self._data_feasible(plan, [lg], trip.daily_data_gb)
+                       for lg in covered):
+                # A pre-filter, not a diagnostic: this plan was never a candidate for
+                # this trip, so it is counted and left out of the listing. The
+                # speed-cap bucket stays enumerable - those plans *were* viable and
+                # only the strict cap removed them.
+                data_total += 1
+                continue
+            hard, after = filters.speed_cap_signals(plan)
+            if hard and not self.include_capped:
+                throttled_total += 1
+                if pid not in seen_throttled and len(excluded_always_throttled) < _DETAIL_CAP:
+                    price, _ = plan.price_in(trip.currency, self.fx)
+                    excluded_always_throttled.append(
+                        {
+                            "id": pid,
+                            "name": plan.name,
+                            "provider": plan.provider,
+                            "price": _round(price),
+                            "currency": trip.currency,
+                            "reasons": hard,
+                        }
+                    )
+                    seen_throttled.add(pid)
+            elif after:
+                if self.strict_speed_cap:
+                    after_cap_excluded_strict += 1
+                else:
+                    after_cap_admitted += 1
 
         # near-matches: per leg, the cheapest purchasable, non-speed-excluded plan that
         # is data-feasible but provably expires before the leg ends.
@@ -439,8 +507,13 @@ class RecommendationEngine:
 
         fetch_failed = [s for s, st in self.fetch_status.items() if not st["ok"]]
         return {
-            "excluded_speed_cap": excluded_speed_cap,
+            "excluded_always_throttled": excluded_always_throttled,
+            "excluded_always_throttled_total": throttled_total,
+            "after_cap_admitted": after_cap_admitted,
+            "after_cap_excluded_strict": after_cap_excluded_strict,
+            "data_insufficient_filtered": data_total,
             "unpurchasable_excluded": unpurchasable,
+            "provider_filtered_out": off_provider,
             "near_matches": near_matches[:20],
             "unservable_legs": unservable,
             "fetch_failed_slugs": fetch_failed,
@@ -498,7 +571,9 @@ class RecommendationEngine:
                 for pid in self.plan_by_id
                 if all(self.leg_by_idx[i].country.slug in self.plan_slugs.get(pid, set()) for i, _ in self.legs)
             ),
-            "speed_cap_excluded": len(diag["excluded_speed_cap"]),
+            "always_throttled_excluded": diag["excluded_always_throttled_total"],
+            "after_cap_admitted": diag["after_cap_admitted"],
+            "data_insufficient_filtered": diag["data_insufficient_filtered"],
             "unpurchasable_excluded": diag["unpurchasable_excluded"],
             "regional_candidates_considered": len(self._regional_candidates(trip)),
             "feasible_families": [k for k in FAMILY_ORDER if strategies[k] is not None],
@@ -544,19 +619,29 @@ class RecommendationEngine:
         )
 
     def _speed_filter_status(self, trip: Trip) -> dict[str, Any]:
+        policy = "strict_all_speed_caps" if self.strict_speed_cap else "always_throttled_only"
         if self.speed_verified:
             return {
                 "requirement": "uncapped eSIMs (esimdb built-in 'Hide plans with speed caps')",
                 "mode": "verified_site_toggle",
                 "verified": True,
                 "include_capped": self.include_capped,
+                "strict_speed_cap": self.strict_speed_cap,
+                "policy": policy,
                 "note": self.speed_note or "verified against the site's built-in speed-cap toggle",
             }
         note = (
-            "Speed-capped plans excluded via a LOCAL PREDICATE on the API's speed fields "
-            "(speedLimit/reducedSpeed/possibleThrottling). This is a safeguard, NOT the "
-            "site's built-in 'Hide plans with speed caps' toggle; that toggle was not exercised."
+            "Speed-cap handling uses a LOCAL PREDICATE on the API's speed fields. Only plans "
+            "throttled from the first byte (speedLimit, possibleThrottling) are excluded: a plan "
+            "that throttles only once its allowance is spent (reducedSpeed) stays a candidate, "
+            "because a plan that already meets the trip's data need cannot reach that throttle. "
+            "This is a safeguard, NOT the site's built-in 'Hide plans with speed caps' toggle; "
+            "that toggle was not exercised."
         )
+        if self.strict_speed_cap:
+            note += (
+                "  --strict-speed-cap was explicitly set: after-allowance throttles are excluded too."
+            )
         if self.include_capped:
             note += (
                 "  --include-capped was explicitly set: speed-capped plans are INCLUDED, so this run "
@@ -567,6 +652,8 @@ class RecommendationEngine:
             "mode": "local_predicate",
             "verified": False,
             "include_capped": self.include_capped,
+            "strict_speed_cap": self.strict_speed_cap,
+            "policy": policy,
             "note": note,
         }
 
@@ -595,6 +682,11 @@ def _round(x: Optional[float]) -> Optional[float]:
         return None
     r = round(float(x), 2)
     return int(r) if r == int(r) else r
+
+
+# How many excluded plans get a line of detail; the counts reported alongside are the
+# true totals, so a capped list can never be mistaken for "there were exactly 50".
+_DETAIL_CAP = 20
 
 
 def _money(v: float, currency: str) -> str:

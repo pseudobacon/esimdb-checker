@@ -54,6 +54,10 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                    help="restrict to one provider (name or slug)")
     p.add_argument("--include-capped", action="store_true",
                    help="include speed-capped plans (overrides the uncapped requirement)")
+    p.add_argument("--strict-speed-cap", action="store_true",
+                   help="also exclude plans throttled only after their allowance is spent "
+                        "(the pre-2026-08 behaviour); by default those are kept, since a "
+                        "plan that covers the trip's data need never reaches the throttle")
     p.add_argument("--refresh", action="store_true",
                    help="re-fetch from esimdb.com, bypassing the cache")
 
@@ -164,15 +168,17 @@ def _client() -> httpx.Client:
     return http.build_client()
 
 
-def _run_engine(client: httpx.Client, trip: Trip, args, data_dir: Path, use_cache: bool):
+def _run_engine(client: httpx.Client, trip: Trip, args, data_dir: Path, use_cache: bool,
+                progress=None):
     engine = RecommendationEngine(
         client,
         data_dir,
         use_cache=use_cache,
         include_capped=getattr(args, "include_capped", False),
+        strict_speed_cap=getattr(args, "strict_speed_cap", False),
         provider=getattr(args, "provider", None),
     )
-    engine.load(trip)
+    engine.load(trip, progress=progress)
     return engine.recommend(trip)
 
 
@@ -385,12 +391,17 @@ def cmd_wizard(args) -> int:
             _fail(str(e))
 
         save_path = Path(args.save_file) if args.save_file else None
+        report = None
         if use_tui:
             print("eSIM itinerary wizard — starting the in-place interface (Esc cancels; "
                   "it will not print into the report).", file=sys.stderr)
+            # Hand the query to the interface: it runs in a worker thread so the screen
+            # stays live and shows which destination it is waiting on.
+            search = lambda trip, progress: _run_engine(  # noqa: E731
+                client, trip, args, data_dir, use_cache, progress=progress)
             try:
                 result = wz.run_tui_wizard(geo, state, save_path=save_path,
-                                           overwrite=args.overwrite)
+                                           overwrite=args.overwrite, search=search)
             except Exception as e:  # terminal quirk, Textual unavailable, etc.
                 print(f"  the in-place interface could not run ({type(e).__name__}: {e}); "
                       "falling back to the plain wizard.", file=sys.stderr)
@@ -415,8 +426,15 @@ def cmd_wizard(args) -> int:
             print("wizard cancelled — no itinerary searched.", file=sys.stderr)
             return 2
 
-        print("Searching esimdb.com for this itinerary ...", file=sys.stderr)
-        report = _run_engine(client, result.trip, args, data_dir, use_cache)
+        if result.search_error:
+            # The interface already showed the failure; report it in the shell's format.
+            _fail(result.search_error)
+
+        if result.report is not None:
+            report = result.report            # searched inside the TUI, nothing to redo
+        else:
+            print("Searching esimdb.com for this itinerary ...", file=sys.stderr)
+            report = _run_engine(client, result.trip, args, data_dir, use_cache)
     _emit(report, args)
     return 0
 

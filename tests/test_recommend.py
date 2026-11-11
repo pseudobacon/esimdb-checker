@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import httpx
 import respx
-
 from conftest import (
     build_plan_entry,
     build_plans_payload,
@@ -21,6 +20,7 @@ from conftest import (
     mock_geo_routes,
     mock_plans_route,
 )
+
 from esimdb_checker.itinerary import build_trip
 from esimdb_checker.models import Country
 from esimdb_checker.recommend import RecommendationEngine
@@ -140,7 +140,7 @@ def test_budget_gate(tmp_path):
     assert rep_ok.budget_status["within_original"] is True
 
 
-def test_speed_cap_excluded(tmp_path):
+def test_always_throttled_plan_is_excluded(tmp_path):
     trip = _trip([(ES, 5, 0)], daily_data_gb=1.0)
     uncapped = entry("es-uncapped", A, "Spain 15GB/30Days", 15000, 30, 20.0)
     capped = entry("es-capped", A, "Spain 15GB/30Days 10Mbps", 15000, 30, 18.0, speed_limit=10000.0)
@@ -148,7 +148,22 @@ def test_speed_cap_excluded(tmp_path):
     assert rep.recommended is not None
     # The capped plan is cheaper but excluded; the uncapped one is recommended.
     assert rep.recommended.plans[0].plan.id == "es-uncapped"
-    assert rep.totals["speed_cap_excluded"] == 1
+    assert rep.totals["always_throttled_excluded"] == 1
+
+
+def test_unlimited_plan_throttled_from_first_use_stays_excluded(tmp_path):
+    """The real trap: an 'unlimited 5G' plan whose 1 Mbps limit is its whole product.
+
+    Unlimited means there is no allowance to exhaust, so 'it only throttles after the
+    cap' cannot apply - admitting it would trade a 30 GB plan for 15 days at 1 Mbps.
+    """
+    trip = _trip([(ES, 15, 0)], daily_data_gb=1.5, currency="USD")
+    unlimited = entry("unl", A, "Fully Unlimited 5G", 0, 15, 7.16,
+                      speed_limit=1000.0, possible_throttling=True)
+    metered = entry("metered", A, "30GB/20Days", 30000, 20, 7.81)
+    rep = _run(tmp_path, [("spain", build_plans_payload([unlimited, metered]))], trip)
+    assert rep.recommended.plans[0].plan.id == "metered"
+    assert rep.totals["always_throttled_excluded"] == 1
 
 
 def test_provider_filter(tmp_path):
@@ -160,3 +175,111 @@ def test_provider_filter(tmp_path):
     # Provider filter restricts candidates to AlphaSim (the pricier one here).
     assert rep.recommended.plans[0].plan.provider == "AlphaSim"
     assert rep.recommended.plans[0].plan.id == "es-a"
+
+
+# ---------------------------------------------------------------------------
+# exclusion diagnostics: data need filters first; the cap is what gets reported
+# ---------------------------------------------------------------------------
+def test_plans_below_the_data_need_are_filtered_not_listed(tmp_path):
+    """A 500 MB/day plan on a 1.5 GB/day trip was never a candidate -> no diagnostic row."""
+    from esimdb_checker.report import render_console
+
+    trip = _trip([(ES, 4, 0)], daily_data_gb=1.5, currency="USD")
+    tiny = entry("tiny", A, "Spain 1 Day / Daily 500MB", 500, 1, 0.20,
+                 data_cap_per="day", reduced_speed=128)
+    rep = _run(tmp_path, [("spain", build_plans_payload([tiny]))], trip)
+    d = rep.diagnostics
+    assert d["excluded_always_throttled"] == []   # not a candidate -> never a cap row
+    assert d["data_insufficient_filtered"] == 1
+    text = render_console(rep)
+    assert "Spain 1 Day / Daily 500MB" not in text
+    assert "filtered before ranking (data below this trip's need): 1" in text
+
+
+def test_after_allowance_throttle_is_a_candidate_and_is_flagged(tmp_path):
+    """'3 GB/day then 128 kbps' covers a 1.5 GB/day trip in full speed - buy it.
+
+    The throttle is unreachable when the plan already meets the need, so it is not an
+    exclusion; but a plan carrying one must still be labelled in the buy list.
+    """
+    from esimdb_checker.report import render_console
+
+    trip = _trip([(ES, 4, 0)], daily_data_gb=1.5, currency="USD")
+    throttled = entry("throttled", A, "Spain Daily 3GB", 3000, 30, 3.0,
+                      data_cap_per="day", reduced_speed=128)
+    clean = entry("clean", A, "Spain Daily 4GB", 4000, 30, 9.0, data_cap_per="day")
+    rep = _run(tmp_path, [("spain", build_plans_payload([throttled, clean]))], trip)
+    assert rep.recommended.plans[0].plan.id == "throttled"   # cheapest, and allowed
+    assert rep.diagnostics["excluded_always_throttled"] == []
+    assert rep.diagnostics["after_cap_admitted"] == 1
+    text = render_console(rep)
+    assert "then 128 kbps after the allowance" in text        # flagged on its own row
+    assert "kept as candidates: 1" in text
+
+
+def test_strict_speed_cap_still_excludes_after_allowance_throttles(tmp_path):
+    """--strict-speed-cap restores the old rule, and says so in the diagnostics."""
+    from esimdb_checker.report import render_console
+
+    trip = _trip([(ES, 4, 0)], daily_data_gb=1.5, currency="USD")
+    throttled = entry("throttled", A, "Spain Daily 3GB", 3000, 30, 3.0,
+                      data_cap_per="day", reduced_speed=128)
+    clean = entry("clean", A, "Spain Daily 4GB", 4000, 30, 9.0, data_cap_per="day")
+    payload = build_plans_payload([throttled, clean])
+    rep = _run(tmp_path, [("spain", payload)], trip, strict_speed_cap=True)
+    assert rep.recommended.plans[0].plan.id == "clean"
+    assert rep.diagnostics["after_cap_excluded_strict"] == 1
+    assert rep.diagnostics["after_cap_admitted"] == 0
+    assert "excluded by --strict-speed-cap: 1" in render_console(rep)
+
+
+def test_cap_bucket_holds_only_the_plans_that_could_have_been_bought(tmp_path):
+    """A hard-capped plan below the data need is filtered silently; the viable one is listed."""
+    trip = _trip([(ES, 4, 0)], daily_data_gb=1.5, currency="USD")
+    short = entry("short", A, "Spain 1 Day / Daily 500MB", 500, 1, 0.20,
+                  data_cap_per="day", speed_limit=1000)
+    viable = entry("viable", A, "Spain Daily 3GB capped", 3000, 30, 3.0,
+                   data_cap_per="day", speed_limit=1000)
+    rep = _run(tmp_path, [("spain", build_plans_payload([short, viable]))], trip)
+    d = rep.diagnostics
+    assert [e["name"] for e in d["excluded_always_throttled"]] == ["Spain Daily 3GB capped"]
+    assert d["data_insufficient_filtered"] == 1
+    assert d["excluded_always_throttled_total"] == 1
+
+
+def test_pooled_plan_too_small_for_every_leg_it_covers(tmp_path):
+    """A 200MB total plan covering a 4-day leg (6 GB needed) is filtered, not listed."""
+    trip = _trip([(ES, 4, 0)], daily_data_gb=1.5, currency="USD")
+    pooled = entry("pool", A, "Spain 1 Day / Total 200MB", 200, 1, 0.10,
+                   reduced_speed=128)
+    rep = _run(tmp_path, [("spain", build_plans_payload([pooled]))], trip)
+    assert rep.diagnostics["excluded_always_throttled"] == []
+    assert rep.diagnostics["data_insufficient_filtered"] == 1
+
+
+def test_exclusion_counts_are_totals_not_list_lengths(tmp_path):
+    """A capped detail list must never be read as 'there were exactly N'."""
+    from esimdb_checker.report import render_console
+
+    trip = _trip([(ES, 4, 0)], daily_data_gb=1.5, currency="USD")
+    plans = [entry(f"c{i}", A, f"Spain Daily 3GB v{i}", 3000, 30, 3.0,
+                   data_cap_per="day", speed_limit=1000) for i in range(25)]
+    rep = _run(tmp_path, [("spain", build_plans_payload(plans))], trip)
+    d = rep.diagnostics
+    assert d["excluded_always_throttled_total"] == 25
+    assert len(d["excluded_always_throttled"]) < 25
+    assert rep.totals["always_throttled_excluded"] == 25    # not the 20-row list length
+    assert "… 5 more (20 shown)" in render_console(rep)
+
+
+def test_plan_names_are_unescaped_once_at_parse(tmp_path):
+    """'Asia &amp; Europe' from the payload must not reach a report as '&amp;'."""
+    from esimdb_checker.report import render_console
+
+    trip = _trip([(ES, 4, 0)], daily_data_gb=1.5, currency="USD")
+    amp = entry("amp", A, "Asia &amp; Europe 52 Countries - Daily 3GB", 3000, 30, 3.0,
+                data_cap_per="day", speed_limit=1000)
+    rep = _run(tmp_path, [("spain", build_plans_payload([amp]))], trip)
+    names = [e["name"] for e in rep.diagnostics["excluded_always_throttled"]]
+    assert names == ["Asia & Europe 52 Countries - Daily 3GB"]
+    assert "&amp;" not in render_console(rep)

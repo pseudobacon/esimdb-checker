@@ -412,3 +412,47 @@ class _mocked:
 
     def __exit__(self, *exc):
         return self._ctx.__exit__(*exc)
+
+
+# --------------------------------------------------------------------------
+# the TUI runs the search itself: the CLI must emit that report, not repeat it
+# --------------------------------------------------------------------------
+def test_a_report_from_the_tui_is_not_searched_twice(tmp_path, monkeypatch):
+    import esimdb_checker.wizard as wz
+    from esimdb_checker import cli
+    seen = {}
+
+    def fake_tui(geo, state, save_path=None, overwrite=False, search=None):
+        seen["search"] = search
+        return wz.WizardResult(trip=object(), cancelled=False, report="REPORT")
+
+    def must_not_run_again(*a, **k):
+        raise AssertionError("the engine ran twice")
+
+    fake_tty(monkeypatch)
+    monkeypatch.setattr(wz, "run_tui_wizard", fake_tui)
+    monkeypatch.setattr(cli, "_run_engine", must_not_run_again)
+    monkeypatch.setattr(cli, "_emit",
+                        lambda report, args, err=None: seen.update(emitted=report))
+    with _mocked(tmp_path):
+        rc = main(["--data-dir", str(tmp_path), "recommend-wizard", "--refresh"])
+    assert rc == 0
+    assert seen["emitted"] == "REPORT"
+    assert callable(seen["search"])          # the interface was handed the query
+
+
+def test_a_search_failure_inside_the_tui_exits_with_an_error(tmp_path, monkeypatch):
+    import esimdb_checker.wizard as wz
+    from esimdb_checker import cli
+
+    out, err = fake_tty(monkeypatch)
+    monkeypatch.setattr(wz, "run_tui_wizard", lambda *a, **k: wz.WizardResult(
+        trip=object(), cancelled=False, search_error="esimdb.com unreachable"))
+    monkeypatch.setattr(cli, "_run_engine",
+                        lambda *a, **k: pytest.fail("must not search after a failure"))
+    with _mocked(tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            main(["--data-dir", str(tmp_path), "recommend-wizard", "--refresh"])
+    assert exc.value.code == 1
+    assert "esimdb.com unreachable" in err.getvalue()
+    assert REPORT_MARKER not in out.getvalue()

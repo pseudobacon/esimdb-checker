@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html
 import re
+from typing import Optional
 
 from .models import Plan
 
@@ -69,6 +70,64 @@ def speed_cap_reasons(plan: Plan) -> list[str]:
 
 def has_speed_cap(plan: Plan) -> bool:
     return bool(speed_cap_reasons(plan))
+
+
+def speed_cap_signals(plan: Plan) -> tuple[list[str], list[str]]:
+    """Split the evidence into ``(always_throttled, after_allowance)``.
+
+    ``reducedSpeed`` is the site's own "reduced speed after the cap" field, so a plan
+    whose only signal is that gets its full allowance at full speed and is throttled
+    afterwards. ``speedLimit`` and ``possibleThrottling`` say no such thing - they
+    describe a plan limited (or possibly limited) from the first byte - so any one of
+    them makes the plan always-throttled, whatever else it carries. Text evidence alone
+    proves nothing about *when* the throttle starts, so it is treated as
+    always-throttled rather than given the benefit of the doubt.
+    """
+    hard: list[str] = []
+    after: list[str] = []
+    if plan.speed_limit is not None:
+        hard.append(f"explicit speed limit: {_fmt_speed_kbps(plan.speed_limit)}")
+    if plan.possible_throttling:
+        hard.append("site 'possible slowdowns' flag (possibleThrottling)")
+    if plan.reduced_speed is not None:
+        after.append(f"speed reduced to {_fmt_speed_kbps(plan.reduced_speed)} after cap")
+    if hard:
+        return speed_cap_reasons(plan), []
+    if not after:
+        # No structured after-cap field: text alone cannot prove the wait.
+        return speed_cap_reasons(plan), []
+    return [], after
+
+
+def always_throttled(plan: Plan) -> bool:
+    """Throttled from the first byte (or possibly so) - never a usable allotment."""
+    hard, _after = speed_cap_signals(plan)
+    return bool(hard)
+
+
+def after_allowance_cap(plan: Plan) -> bool:
+    """Full-speed allowance, then a throttle once it is spent."""
+    _hard, after = speed_cap_signals(plan)
+    return bool(after)
+
+
+def after_cap_phrase(plan: Plan) -> Optional[str]:
+    """'128 kbps after the allowance' - for use inside a sentence."""
+    if not after_allowance_cap(plan):
+        return None
+    return f"{_fmt_speed_kbps(plan.reduced_speed)} after the allowance"
+
+
+def speed_cap_label(plan: Plan) -> Optional[str]:
+    """One-clause warning for a plan shown in a recommendation despite a cap."""
+    phrase = after_cap_phrase(plan)
+    if phrase:
+        return f"then {phrase}"
+    if plan.speed_limit is not None:
+        return f"speed limited to {_fmt_speed_kbps(plan.speed_limit)} from first use"
+    if plan.possible_throttling:
+        return "possible throttling (site flag)"
+    return "possible throttling (plan text)" if speed_cap_reasons(plan) else None
 
 
 def purchasable(plan: Plan) -> tuple[bool, list[str]]:

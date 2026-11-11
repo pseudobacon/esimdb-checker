@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from esimdb_checker.filters import (
+    after_allowance_cap,
+    after_cap_phrase,
+    always_throttled,
     has_speed_cap,
     meets_data_need_for_days,
     purchasable,
+    speed_cap_label,
     speed_cap_reasons,
+    speed_cap_signals,
 )
 from esimdb_checker.models import Plan
 
@@ -39,6 +44,51 @@ def test_throttling_text_is_capped():
 
 def test_clean_plan_is_uncapped():
     assert not has_speed_cap(_plan())
+
+
+# --- when does the throttle start? (the difference between buyable and useless) ---
+def test_reduced_speed_alone_means_throttle_after_the_allowance():
+    p = _plan(reduced_speed=128.0)
+    assert after_allowance_cap(p)
+    assert not always_throttled(p)
+    assert speed_cap_signals(p) == ([], ["speed reduced to 128 kbps after cap"])
+    assert after_cap_phrase(p) == "128 kbps after the allowance"
+    assert speed_cap_label(p) == "then 128 kbps after the allowance"
+
+
+def test_explicit_limit_is_always_throttled():
+    p = _plan(speed_limit=1000.0)
+    assert always_throttled(p)
+    assert not after_allowance_cap(p)
+    assert speed_cap_label(p) == "speed limited to 1 Mbps from first use"
+
+
+def test_site_throttle_flag_is_always_throttled():
+    p = _plan(possible_throttling=True)
+    assert always_throttled(p)
+    assert speed_cap_label(p) == "possible throttling (site flag)"
+
+
+def test_a_hard_signal_outranks_an_after_cap_field():
+    """reducedSpeed cannot vouch for a plan that also carries an explicit limit."""
+    p = _plan(reduced_speed=128.0, speed_limit=1000.0)
+    assert always_throttled(p)
+    assert not after_allowance_cap(p)
+    hard, after = speed_cap_signals(p)
+    assert hard and not after
+
+
+def test_text_alone_is_not_proof_of_an_after_allowance_cap():
+    """'10GB then 384kbps' reads as after-cap to a human, but the plan gives no field to
+    prove it; without proof the conservative reading (always throttled) is kept."""
+    p = _plan(name="10GB then 384kbps")
+    assert always_throttled(p)
+    assert not after_allowance_cap(p)
+
+
+def test_clean_plan_has_no_speed_warning():
+    assert speed_cap_label(_plan()) is None
+    assert after_cap_phrase(_plan()) is None
 
 
 def test_purchasable_requires_positive_price():

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from . import filters
 from .models import Report, Strategy, StrategyPlan
 
 
@@ -39,6 +40,11 @@ def _plan_bits(plan) -> str:
     cap = plan.data_cap_label()
     if cap:
         bits.append(cap)
+    # A plan shown despite a speed cap must say so on its own line: an unlimited-at-1Mbps
+    # plan and a clean 30 GB plan would otherwise be indistinguishable in the buy list.
+    warning = filters.speed_cap_label(plan)
+    if warning:
+        bits.append(f"⚠ {warning}")
     return " · ".join(bits)
 
 
@@ -67,10 +73,12 @@ def _itinerary_lines(report: Report) -> list[str]:
 def _cap_state(report: Report) -> str:
     s = report.speed_filter_status
     if s.get("include_capped"):
-        return "INCLUDED (override)"
+        return "capped INCLUDED (override)"
+    if s.get("strict_speed_cap"):
+        return "all speed caps excluded (--strict-speed-cap)"
     if s.get("verified"):
-        return "excluded (verified vs site toggle)"
-    return "excluded (local predicate)"
+        return "always-throttled excluded (verified vs site toggle)"
+    return "always-throttled excluded, after-allowance caps allowed"
 
 
 def _strategy_table_lines(report: Report) -> list[str]:
@@ -203,12 +211,32 @@ def _budget_lines(report: Report) -> list[str]:
 def _diagnostics_lines(report: Report) -> list[str]:
     d = report.diagnostics
     lines = ["Diagnostics (not part of the recommendation):"]
-    excl = d.get("excluded_speed_cap", [])
-    lines.append(f"  speed-capped excluded (local predicate): {len(excl)}")
-    for e in excl[:8]:
-        lines.append(f"    ✗ {e['name']} — {e['provider']} ({_money(e['price'], e['currency'])}): {'; '.join(e['reasons'])}")
-    if len(excl) > 8:
-        lines.append(f"    … {len(excl) - 8} more")
+    # Plans below the trip's data need are filtered before ranking and never were
+    # candidates, so they are counted rather than listed.
+    data_filtered = d.get("data_insufficient_filtered", 0)
+    if data_filtered:
+        lines.append(f"  filtered before ranking (data below this trip's need): "
+                     f"{data_filtered}")
+    throttled = d.get("excluded_always_throttled", [])
+    total = d.get("excluded_always_throttled_total", len(throttled))   # the true count, not the list
+    if total:
+        lines.append(f"  throttled from first use, excluded: {total}")
+    for e in throttled[:8]:
+        lines.append(f"    ✗ {e['name']} — {e['provider']} "
+                     f"({_money(e['price'], e['currency'])}): {'; '.join(e['reasons'])}")
+    if total > len(throttled):
+        lines.append(f"    … {total - len(throttled)} more ({len(throttled)} shown)")
+    elif len(throttled) > 8:
+        lines.append(f"    … {len(throttled) - 8} more")
+    # After-allowance throttles are candidates now, so they are not exclusions - but a
+    # run where they did the work should not look identical to one where none existed.
+    admitted = d.get("after_cap_admitted", 0)
+    if admitted:
+        lines.append(f"  throttled only after the allowance, kept as candidates: {admitted}")
+    strict_excluded = d.get("after_cap_excluded_strict", 0)
+    if strict_excluded:
+        lines.append(f"  throttled only after the allowance, excluded by --strict-speed-cap: "
+                     f"{strict_excluded}")
     near = d.get("near_matches", [])
     lines.append(f"  near-matches (fail validity, shown for reference — NOT valid): {len(near)}")
     for n in near[:8]:
@@ -216,6 +244,10 @@ def _diagnostics_lines(report: Report) -> list[str]:
     unserv = d.get("unservable_legs", [])
     if unserv:
         lines.append(f"  unservable legs (no plan can meet data/validity): {', '.join(unserv)}")
+    if d.get("unpurchasable_excluded"):
+        lines.append(f"  not purchasable (no positive price): {d['unpurchasable_excluded']}")
+    if d.get("provider_filtered_out"):
+        lines.append(f"  filtered out by --provider: {d['provider_filtered_out']}")
     if d.get("fetch_failed_slugs"):
         lines.append(f"  acquisition failed for: {', '.join(d['fetch_failed_slugs'])}")
     return lines
@@ -335,15 +367,13 @@ def render_markdown(report: Report) -> str:
     w("")
     w("## Diagnostics")
     w("")
-    d = report.diagnostics
-    w(f"Speed-capped excluded (local predicate): {len(d.get('excluded_speed_cap', []))}")
-    for e in d.get("excluded_speed_cap", [])[:20]:
-        w(f"- **{e['name']}** — {e['provider']} ({_money(e['price'], e['currency'])}): {'; '.join(e['reasons'])}")
-    w(f"Near-matches (fail validity — NOT valid): {len(d.get('near_matches', []))}")
-    for n in d.get("near_matches", [])[:20]:
-        w(f"- {n['leg']}: **{n['plan']}** — {n['provider']} ({_money(n['price'], n['currency'])}): {n['reason']}")
-    if d.get("unservable_legs"):
-        w(f"Unserevable legs: {', '.join(d['unservable_legs'])}")
+    # Same lines as the console report - a second copy of this logic is how the two
+    # renderers ended up disagreeing about whether counts were truncated.
+    for line in _diagnostics_lines(report)[1:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        w(f"- {stripped.lstrip('✗? ')}" if line.startswith("    ") else stripped)
     w("")
     w("## Speed-cap requirement status")
     w("")

@@ -33,11 +33,22 @@ sets — which is esimdb.com's own coverage assertion. Plan-name scope (e.g. "Eu
 "Global") is parsed separately only to label the scope and to flag ambiguous names
 ("partial" / "unverified"); it is never the authoritative gate.
 
-**Speed caps (strict filter).** Plans with a speed cap are excluded by default and
-reported with reasons. Caps are detected from three independent signals so that a plan
-hidden by the site's own "Hide plans with speed caps" toggle is still caught:
-`speedLimit`, `reducedSpeed`, `possibleThrottling`, plus strong throttling text in the
-plan name/notes. `--include-capped` relaxes this (capped plans are then shown, flagged).
+**Speed caps.** Only plans throttled **from the first byte** are excluded by default;
+a plan that throttles once its allowance is spent stays a candidate, because a plan that
+already meets the trip's data need can never reach that throttle. Detection uses three
+independent signals, so a plan hidden by the site's own "Hide plans with speed caps"
+toggle is still caught:
+
+| signal | meaning | default |
+| --- | --- | --- |
+| `reducedSpeed` | full speed, then throttled **after the allowance** | kept, flagged `⚠ then 128 kbps after the allowance` |
+| `speedLimit` | a hard ceiling that applies immediately | excluded |
+| `possibleThrottling` | the site's own "possible slowdowns" flag | excluded |
+| throttling text in name/notes | e.g. "…then 384kbps", "after cap" | excluded (no field proves *when* it starts) |
+
+The distinction matters most for "unlimited" plans: with no allowance to exhaust, a limit
+is the product — an "Unlimited 5G" plan capped at 1 Mbps stays out. `--strict-speed-cap`
+excludes after-allowance throttles too; `--include-capped` admits everything (flagged).
 
 **Pricing & currency.** Prices are stored per currency (USD, EUR, GBP, JPY, …) exactly as
 the site provides them. Every plan is converted to the requested `--currency` using the
@@ -56,6 +67,13 @@ uv pip install -e .     # or: install the `esimdb-checker` console script
 ```
 
 Then run with `.venv/bin/esimdb-checker …`, or `uv run esimdb-checker …`.
+
+**No browser is required.** The tool reads the structured JSON that esimdb.com's own Nuxt
+client fetches during a normal page load (see [How it gets data](#how-it-gets-data-important)),
+so there is nothing to install or log into. The only terminal requirement is that the
+`recommend-wizard` TUI needs a real terminal; without one it falls back to `--plain`.
+
+Requires Python 3.10+.
 
 ## Usage
 
@@ -127,7 +145,8 @@ esimdb-checker fetch "https://esimdb.com/api/client/countries"
 | `--budget` | optional total-trip budget | none |
 | `--budget-currency` | currency `--budget` is expressed in (converted for comparison) | `--currency` |
 | `--provider` | restrict to one provider (name or slug) | all |
-| `--include-capped` | include speed-capped plans (shown, flagged) | off |
+| `--include-capped` | include every speed-capped plan, including always-throttled ones | off |
+| `--strict-speed-cap` | also exclude plans throttled only after the allowance | off |
 | `--json` | print the full typed report as JSON to stdout | console text |
 | `--md` | write a Markdown report (with `--out`, default `report.md`) | — |
 | `--out FILE` | output file for `--md`, or for console text when `--md`/`--json` are absent; with `--json` also copies the JSON there while stdout stays clean | — |
@@ -158,27 +177,43 @@ esimdb-checker recommend-wizard --md --out report.md     # write a Markdown repo
 
 Three named stages — **Destinations → Preferences → Review** — shown as a progress line:
 
-1. **Destinations** — type a destination plus its days and transfer days, then *Add leg*.
-   Transfer days are asked **per leg** and are **never charged** (they still shift the
-   travel-day spans shown in the table). *+ transfer* inserts a standalone uncharged
-   marker leg; *edit* / *remove* change or drop a leg (type its number, then press the same
-   key again or Enter). Nothing is searched until you continue.
+1. **Destinations** — add a leg (destination, days in that country, transfer days), and
+   repeat. Transfer days are asked **per leg** and are **never charged** (they still shift
+   the travel-day spans shown in the table). Press `t` to insert a standalone uncharged
+   marker leg between countries, `e` to edit the selected leg, `d` to delete it and `u` to
+   undo the last delete. Nothing is searched until you continue.
 2. **Preferences** — currency (defaults to `EUR`, validated against the supported list; a
    bad code keeps you on the same line with an explanation), total budget **in that same
    currency** (blank = no cap), then an expected-data level chosen with the arrow keys:
    *Economy 1 GB/day*, *Balanced 1.5 GB/day*, *Higher usage 2 GB/day* — with the resulting
    trip total shown (e.g. a 34-day trip at 2 GB/day is 68 GB).
-3. **Review** — the derived itinerary (legs, charged days, travel-day spans, required GB,
-   currency, budget). *Save itinerary* writes the reusable JSON file; *search this
-   itinerary* closes the UI and prints the report **once** on the normal screen, so it
-   stays visible and scrollback works. At the save prompt a path is used as given, a bare
-   `y` (or Enter in the TUI) saves as `itinerary.json`, and `n` skips — yes/no answers are
-   never turned into filenames.
+3. **Review** — a read-only summary of what will be searched (legs, charged days,
+   travel-day spans, required GB, currency, budget). `Enter` searches immediately — there is
+   no "are you sure?" page — and the query runs **inside** this screen, so the legs stay
+   visible with a progress line (`Searching esimdb.com for this itinerary...  8 s` /
+   `China (4 of 4)`) instead of the terminal coming back. `s` writes the reusable JSON file.
+   Nothing can be edited here: go back with `Esc` to change a leg. At the save prompt a path
+   is used as given, a bare `y` (or Enter in the TUI) saves as `itinerary.json`, and `n`
+   skips — yes/no answers are never turned into filenames.
 
-Keyboard: `Tab`/`Shift+Tab` move between controls, `Enter` confirms the current stage or
-the focused button, `↑`/`↓` choose the data level, `Esc` cancels. Invalid input is reported
-in the current stage and nothing is lost; going *< back* returns with every entered value
-kept.
+**Keyboard only.** There are no buttons, and the terminal is never asked to capture the
+mouse, so native drag-select and copy keep working inside the wizard (verified against a
+pseudo-terminal: the byte stream contains no mouse-tracking sequence).
+
+| Key | What it does |
+| --- | --- |
+| `↑` / `↓` (also `Ctrl+P` / `Ctrl+N`) | move the cursor over legs (itinerary stage — Review has nothing to select) |
+| `Enter` | continue / confirm — submit the answer being typed; "yes" on a yes/no prompt; on Review it starts the search |
+| `y` / `n` | yes/no prompts (`Enter` is yes, `Esc` is no, `↑`/`↓`/`←`/`→` work too) |
+| `a` `e` `d` `t` `u` | add leg · edit selected leg · delete selected leg · insert uncharged transfer marker · undo the last delete — **itinerary stage only**; Review is read-only |
+| `s` | save the itinerary (Review stage only) |
+| `Alt+Left` | one step back, with every entered value kept (still bound; the hint line points at `Esc`) |
+| `Esc` | cancel the answer being typed → back a stage → cancel the wizard (twice on the first stage) |
+
+While an answer is being typed, letters, digits, arrows and `Backspace` edit the text:
+the list commands are inert until the answer is submitted or cancelled with `Esc`, so a
+destination containing `t` or `d` is typed normally. Overwriting an existing file is the one
+prompt where `Enter` means *keep the existing file* — overwriting needs an explicit `y`.
 
 The wizard always produces the same `Trip` the non-interactive path builds — the validation,
 itinerary maths, saving, and recommendation are shared, never duplicated.
@@ -205,7 +240,7 @@ that is not a menu word is resolved as a destination name, ISO code, or slug.
 | `--budget`, `--daily-data` | prefill those answers |
 | `--plain` | force the line-oriented interview |
 | `--save-file FILE`, `--overwrite` | save the confirmed itinerary |
-| `--provider`, `--include-capped`, `--refresh`, `--data-dir` | same meaning as for `recommend` (`--data-dir` is global: put it **before** the subcommand) |
+| `--provider`, `--include-capped`, `--strict-speed-cap`, `--refresh`, `--data-dir` | same meaning as for `recommend` (`--data-dir` is global: put it **before** the subcommand) |
 | `--json`, `--md`, `--out` | shared output options (see above) |
 
 ### Reading a recommendation
@@ -221,52 +256,66 @@ one (ranked in the requested currency):
 Each plan shows its activation day, which legs it serves (and their travel days), and any
 assumptions (e.g. a validity that must span the legs). A plan must be **data-feasible** and
 **valid** (not expire before the legs it serves end) to be used for those legs.
-Speed-capped plans and unpurchasable plans are never silent — they appear in
-`excluded_speed_cap` / `unpurchasable_excluded`, and a data-feasible-but-too-short plan is
-surfaced under `near_matches`. With `--budget`, the `budget_status` section reports whether
+Speed-capped plans and unpurchasable plans are never silent — always-throttled plans
+appear in `excluded_always_throttled` (with `excluded_always_throttled_total` for the true
+count) and unpurchasable ones in `unpurchasable_excluded`; plans kept only because their
+throttle waits for the allowance are counted in `after_cap_admitted` and flagged per row; a
+data-feasible-but-too-short plan is surfaced under `near_matches`. With `--budget`, the `budget_status` section reports whether
 the cheapest strategy is within budget (and, if not, the compound 10% steps needed to relax
 it).
 
 ## Testing
 
 ```bash
-uv run pytest                 # 142 offline tests (mocked API + headless TUI), no network
-uv run ruff check src tests   # lint
+uv run pytest                 # 173 offline tests (mocked API + headless TUI), no network
+uv run ruff check src tests   # lint (see the note below)
 ```
 
-The suite mocks the observed API with `respx` and synthetic folded payloads, covering
-parsing, country/region resolution, the itinerary/stop model, speed-cap detection, the
-three strategy families (dedup, validity, budget, provider filter), and the CLI. The
+The suite runs offline: `respx` mocks the observed API with synthetic folded payloads,
+covering parsing, country/region resolution, the itinerary/stop model, speed-cap detection,
+the three strategy families (dedup, validity, budget, provider filter), and the CLI. No test
+touches esimdb.com, and no personal itinerary is needed. The
 wizard is covered twice: `tests/test_wizard.py` drives the plain front-end with scripted
-input, `tests/test_wizard_tui.py` drives the real Textual widgets through `App.run_test`
-(Textual's headless driver), and `tests/test_cli_wizard.py` drives the CLI wizard path —
-including the output modes — through a fake TTY. The TUI tests pause briefly around clicks
-and keyboard confirms because Textual debounces a second click on a button that is still
-playing its press animation; that is why the suite takes ~50 s instead of a few seconds.
+input, `tests/test_wizard_tui.py` drives the real Textual app through `App.run_test`
+(Textual's headless Pilot: named keys, no mouse at all), and `tests/test_cli_wizard.py`
+drives the CLI wizard path — including the output modes — through a fake TTY. The TUI tests
+pause briefly after each key because Textual batches a submitted answer with the repaint that
+follows it; that is why the suite takes ~90 s instead of a few seconds.
+
+**On lint:** `ruff check .` currently reports ~175 findings (mostly `Optional[X]` → `X | None`
+and long lines) that predate the current code and are not fixed yet; they are style debt, not
+failures of behaviour. The numbers are tracked in `docs/HANDOFF.md`.
 
 ### Verified in a terminal
 
 Headless widget tests cannot see what a terminal actually shows, so the wizard was also
-driven inside a **real pseudo-terminal** (`pty.fork()` + a 110×34 window, with the output
-reconstructed through the `pyte` terminal emulator). Keyboard-only, no mouse: destination +
-days + transfer days → `Tab` → `Enter`, `Tab` to *next →*, currency, budget, `↑`/`↓` for the
-data level, review, search. That check confirmed:
+driven inside a **real pseudo-terminal** (`pty.fork()` + a 104×34 window, output
+reconstructed through the `pyte` emulator, and the child's exit status reaped). One keyboard
+only, one keystroke per write: add legs with per-leg days and transfer days, insert a
+transfer marker, edit a leg, decline a delete, currency, budget, `↓` to the data level,
+`Alt+Left` back to the itinerary, `s` to save, Enter to search. That check confirmed:
 
-- the alternate screen is entered **and left** (`?1049h`/`?1049l`) and mouse tracking is set
-  **and cleared**, so the shell is never left grabbed;
-- all three input boxes render side by side, and the button-name hints (`[add leg]`,
-  `[use currency ->]`, `[search this itinerary]`) appear literally;
-- after the search, the full report is printed on the normal screen with the wizard's
-currency, per-destination durations, and provenance block.
+- the alternate screen is entered **and left** (`?1049h` / `?1049l`), and **no mouse-tracking
+  sequence is ever sent** (no `?1000h`/`?1003h`/`?1006h`/`?1015h`), so nothing can be
+  clicked and native terminal selection/copy keeps working;
+- `Alt+Left`, sent as the bytes a terminal really emits (`ESC [ 1 ; 3 D`), walks back from
+  Preferences to the itinerary with the legs intact;
+- the interview exits 0, the report is printed **once** on the normal screen afterwards —
+  legs, charged days, travel-day spans, required GB, chosen currency, and provenance — and
+  the shell prompt is usable afterwards (cancelling exits 2 and prints no report);
+- confirming the search does **not** drop back to the shell: one Enter on Review starts it
+  (no confirmation page) and the legs stayed on screen with a live progress line
+  (`Searching esimdb.com for this itinerary...  8 s` and `China (4 of 4)`) while the query
+  ran; no `Searching…` line was ever printed into the terminal afterwards.
 
-It also found two real defects that no headless test could see — Rich was swallowing the
-`[button]` hints as markup, and the input row had no width rule — both fixed and covered by
-regression tests in `tests/test_wizard_tui.py`.
+It also found a real defect no headless test could see: an answer field that is un-hidden
+and re-focused inside the same input batch silently swallowed the first characters typed
+after a key like `a`. The field now stays in the layout (only `disabled`/focus toggle), and
+keys that arrive before focus lands are applied by the app instead of dropped — both
+regression-tested in `tests/test_wizard_tui.py`.
 
 What was **not** verified: this environment has no human-observable display, so colours,
-spacing, resize behaviour, and mouse interaction were not eyeballed; and the pty harness
-could not read the child's exit status back (the report text and the restored screen were
-checked instead). Everything else here is machine-checked.
+spacing and resize behaviour were not eyeballed. Everything else here is machine-checked.
 
 ### Verified commands
 
@@ -301,6 +350,37 @@ Live verification of the recommendation data itself:
 ```bash
 uv run esimdb-checker recommend spain --days 9 --daily-data 1.5 --currency EUR
 ```
+
+## Limitations
+
+Worth knowing before acting on a report:
+
+- **Research only.** It never buys, reserves, or activates anything, and it never checks your
+  device. Prices and availability are those *listed at capture time* — confirm on the site
+  before purchasing.
+- **Undocumented upstream.** Data comes from esimdb.com's public Nuxt JSON endpoints. They are
+  not a public API: they can change shape or disappear without notice, at which point the
+  parser needs updating (`snapshot_manifest` in each report records exactly what was read).
+- **Coverage mirrors the site.** The authoritative coverage gate is "this plan is listed on that
+  destination's page". A plan esimdb.com does not list is invisible here, and a plan the site
+  lists incorrectly is believed.
+- **Speed caps are a local predicate, not the site's toggle.** `speed_filter_status` in every
+  report says `mode: local_predicate, verified: false` — the site's own "Hide plans with speed
+  caps" toggle was never exercised, so treat the filter as a safeguard, not a guarantee. A
+  throttle that starts only after the allowance is spent is accepted on the reasoning that a
+  plan which already covers the trip's data need never reaches it; unusual usage patterns can
+  break that assumption.
+- **Data need is an average.** `daily_data_gb × days` assumes even daily use; it does not model
+  hotspotting, downloads, or a single heavy day on a daily-cap plan.
+- **Validity is calendar arithmetic from the listed period.** A plan is activated once, at the
+  earliest leg it serves. Plans whose period is unknown (`period_days == 0`) are used only with
+  an explicit assumption recorded in the report.
+- **Currency is ECB reference data, not your bank.** `--currency` converts with Frankfurter
+  (ECB reference rates, cached 12 h). It ignores card fees, spreads, and the provider's billing
+  currency, so totals are comparable but not what you will actually be charged.
+- **Not modelled:** taxes, device compatibility/network bands, eSIM support, carrier locks,
+  tethering and voice policy, real-name registration requirements (some destinations require ID
+  registration before an eSIM works), fair-use policies, and refund terms.
 
 ## Reproducibility
 

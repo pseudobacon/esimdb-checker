@@ -21,6 +21,7 @@ like "day" when a per-day cap applies.
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 from typing import Any
 
@@ -83,7 +84,9 @@ def parse_folded(payload: dict[str, Any], source_slug: str) -> list[Plan]:
         fam_idx = _as_int(row[0], -1)
         fam = families[fam_idx] if 0 <= fam_idx < len(families) and isinstance(families[fam_idx], dict) else {}
         plan_id = row[1]
-        name = str(row[6]).strip()
+        # The payload carries HTML-escaped text ("Asia &amp; Europe 52 Countries");
+        # unescape once here so every renderer, matcher and report sees clean text.
+        name = html.unescape(str(row[6]).strip())
         if not plan_id or not name:
             continue
 
@@ -94,7 +97,7 @@ def parse_folded(payload: dict[str, Any], source_slug: str) -> list[Plan]:
             Plan(
                 id=str(plan_id),
                 name=name,
-                provider=str(prov.get("name") or "Unknown"),
+                provider=html.unescape(str(prov.get("name") or "Unknown")),
                 provider_slug=str(prov.get("slug") or ""),
                 provider_popularity=_as_int(prov.get("popularity"), 0),
                 capacity_mb=_as_int(row[2], 0),

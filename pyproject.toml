@@ -13,8 +13,9 @@ classifiers = [
 ]
 # The application reads the structured JSON responses the esimdb.com Nuxt client
 # fetches during a normal page load (documented in docs/ARCHITECTURE.md). It does
-# NOT require a browser; playwright is an *optional* extra used only by the
-# opt-in live smoke test to re-verify filter behaviour end to end.
+# NOT require a browser. The `live` extra below is aspirational: no live test exists
+# yet (the `live` pytest marker is registered but unused), so nothing here imports
+# playwright. Either build that smoke test or drop the extra.
 dependencies = [
     "httpx>=0.27",
     # In-place terminal UI for `recommend-wizard`. The wizard also has a
