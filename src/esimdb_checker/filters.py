@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import html
 import re
-from typing import Optional
 
 from .models import Plan
 
@@ -52,7 +51,6 @@ def speed_cap_reasons(plan: Plan) -> list[str]:
         reasons.append("site 'possible slowdowns' flag (possibleThrottling)")
 
     text = html.unescape(plan.name) + " " + (plan.notes or "")
-    low = text.lower()
     for label, pattern in _TEXT_PATTERNS:
         m = pattern.search(text)
         if m:
@@ -111,14 +109,14 @@ def after_allowance_cap(plan: Plan) -> bool:
     return bool(after)
 
 
-def after_cap_phrase(plan: Plan) -> Optional[str]:
+def after_cap_phrase(plan: Plan) -> str | None:
     """'128 kbps after the allowance' - for use inside a sentence."""
     if not after_allowance_cap(plan):
         return None
     return f"{_fmt_speed_kbps(plan.reduced_speed)} after the allowance"
 
 
-def speed_cap_label(plan: Plan) -> Optional[str]:
+def speed_cap_label(plan: Plan) -> str | None:
     """One-clause warning for a plan shown in a recommendation despite a cap."""
     phrase = after_cap_phrase(plan)
     if phrase:

@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "Research travel eSIM plans on esimdb.com and recommend a whole-itinerary purchase strategy (research/recommend only — never buys or activates)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
 authors = [{ name = "Chris Wong" }]
+# No `license` field on purpose: a licence has not been chosen, and claiming one in package
+# metadata (this file previously said MIT with no LICENSE file anywhere) would grant rights that
+# were never decided. Add `license` and a LICENSE file together, once a choice is made.
 keywords = ["esim", "travel", "esimdb", "cli", "httpx"]
 classifiers = [
     "Programming Language :: Python :: 3",

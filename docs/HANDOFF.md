@@ -70,8 +70,9 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
 - Sweep the ~175 ruff findings as a dedicated commit (keep it out of feature diffs).
 - `pyproject` declares a `live` extra (playwright) and a `live` pytest marker; **no live test
   exists**. Either write it or delete both. The comment now says so.
-- `pyproject.toml` declares `license = { text = "MIT" }` but there is **no LICENSE file** and no
-  confirmed choice — resolve before making anything public.
+- **Licence is unchosen.** `pyproject.toml` used to claim `MIT` with no LICENSE file anywhere;
+  the claim is now removed (see DEVELOPMENT-LOG, 2026-11-11). Choose a licence and add the field
+  *and* a LICENSE file together — do not re-add the field on its own.
 - `itinerary.py` currency list and the wizard's currency list should not be able to drift; they
   are shared today but only by import.
 - No CI, no packaging release flow, no screenshots/GIF in the README.

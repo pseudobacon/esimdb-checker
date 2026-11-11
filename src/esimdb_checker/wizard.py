@@ -18,9 +18,10 @@ shared ``Geo`` resolver.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Any
 
 from . import geo as geo_mod
 from .fx import supported_currency_codes, validate_currency_code
@@ -36,24 +37,24 @@ DEFAULT_DAILY_DATA = 1.5
 # (label, GB/day) — the three offered presets. Entering a literal number of
 # GB/day is also accepted in plain mode; the TUI uses an arrow-key selector so
 # numeric and GB/day inputs are never mixed.
-DATA_PRESETS: List[tuple[str, float]] = [
+DATA_PRESETS: list[tuple[str, float]] = [
     ("Economy", 1.0),
     ("Balanced", 1.5),
     ("Higher usage", 2.0),
 ]
 
-STAGES: List[str] = ["Destinations", "Preferences", "Review"]
+STAGES: list[str] = ["Destinations", "Preferences", "Review"]
 
 
 @dataclass
 class WizardResult:
-    trip: Optional[Trip]
+    trip: Trip | None
     cancelled: bool
-    save_path: Optional[Path] = None
+    save_path: Path | None = None
     # Set when the TUI ran the search itself, so the terminal stays in the interface
     # while esimdb.com is being queried. `search_error` is the failure to report.
-    report: Optional[Any] = None
-    search_error: Optional[str] = None
+    report: Any | None = None
+    search_error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +62,7 @@ class WizardResult:
 # ---------------------------------------------------------------------------
 @dataclass
 class LegEntry:
-    country: Optional[Country]
+    country: Country | None
     days: int = 0
     transfer_days: int = 0
 
@@ -83,13 +84,13 @@ class LegEntry:
 class WizardState:
     """The itinerary being assembled. Both UIs read/write only this object."""
 
-    legs: List[LegEntry] = field(default_factory=list)
-    currency: Optional[str] = None  # normalized supported code
-    budget: Optional[float] = None  # None = no budget cap
-    daily_data_gb: Optional[float] = None
+    legs: list[LegEntry] = field(default_factory=list)
+    currency: str | None = None  # normalized supported code
+    budget: float | None = None  # None = no budget cap
+    daily_data_gb: float | None = None
 
     # ---- legs ----------------------------------------------------------
-    def charged(self) -> List[LegEntry]:
+    def charged(self) -> list[LegEntry]:
         return [leg for leg in self.legs if not leg.is_transfer and leg.days > 0]
 
     def add_destination(self, country: Country, days: int, transfer: int = 0) -> None:
@@ -112,14 +113,14 @@ class WizardState:
         self.legs.insert(min(max(idx, 0), len(self.legs)), leg)
 
     # ---- preferences (each returns (ok, error_or_none)) -----------------
-    def set_currency(self, raw) -> tuple[bool, Optional[str]]:
+    def set_currency(self, raw) -> tuple[bool, str | None]:
         code, err = validate_currency_code(raw)
         if err is not None:
             return False, err
         self.currency = code
         return True, None
 
-    def set_budget(self, raw) -> tuple[bool, Optional[str]]:
+    def set_budget(self, raw) -> tuple[bool, str | None]:
         v = str(raw).strip()
         if v.lower() in ("", "n", "no", "none", "-"):
             self.budget = None
@@ -133,7 +134,7 @@ class WizardState:
         self.budget = f
         return True, None
 
-    def set_daily_data(self, raw) -> tuple[bool, Optional[str]]:
+    def set_daily_data(self, raw) -> tuple[bool, str | None]:
         v = str(raw).strip().lower()
         for name, gb in DATA_PRESETS:
             if v in (name.lower(), name.split()[0].lower()):
@@ -175,14 +176,14 @@ class WizardState:
         return build_trip(stops, daily_data_gb=self.daily_data_gb,
                           currency=self.currency, budget=self.budget)
 
-    def summary_lines(self, show_data: bool = True) -> List[str]:
+    def summary_lines(self, show_data: bool = True) -> list[str]:
         """Compact leg table with travel-day spans (mirrors the report's days).
 
         ``show_data`` is False during the destinations stage, before the daily
         data level has been chosen, so no GB figures are invented from a default.
         """
         daily = self.daily_data_for()
-        lines: List[str] = []
+        lines: list[str] = []
         cursor = 1
         for i, leg in enumerate(self.legs, start=1):
             cursor += leg.transfer_days
@@ -207,7 +208,7 @@ class WizardState:
             lines.append(f"  TOTAL: {total} charged day(s)")
         return lines
 
-    def review_lines(self) -> List[str]:
+    def review_lines(self) -> list[str]:
         ok, _ = self.can_build()
         lines = self.summary_lines()
         lines.append(f"  currency: {self.currency or '(unset)'}")
@@ -372,7 +373,7 @@ def _daily_default_str(state: WizardState) -> str:
     return f"{gb:g}"
 
 
-def _plain_review(state: WizardState, ask, out, save_path, overwrite) -> Optional[Path]:
+def _plain_review(state: WizardState, ask, out, save_path, overwrite) -> Path | None:
     out("")
     out("Confirm your itinerary:")
     out("\n".join(state.review_lines()))
@@ -381,7 +382,7 @@ def _plain_review(state: WizardState, ask, out, save_path, overwrite) -> Optiona
     return _plain_save(state, save_path, overwrite, ask, out)
 
 
-def _plain_save(state, save_path, overwrite, ask, out) -> Optional[Path]:
+def _plain_save(state, save_path, overwrite, ask, out) -> Path | None:
     if save_path is None:
         p = _ask_optional(ask, out,
                           "Save this itinerary to a file? (enter a path, y for "
@@ -416,7 +417,7 @@ def run_plain_wizard(
     state: WizardState,
     ask: Callable[[], str],
     out: Callable[[str], None],
-    save_path: Optional[Path] = None,
+    save_path: Path | None = None,
     overwrite: bool = False,
 ) -> WizardResult:
     out("Itinerary wizard (plain mode)")
@@ -495,7 +496,7 @@ def _ask_int_loop(ask, out, prompt: str, default, minimum: int) -> int:
             return n
 
 
-def _ask_leg_index(state: WizardState, ask, out, prompt: str) -> Optional[int]:
+def _ask_leg_index(state: WizardState, ask, out, prompt: str) -> int | None:
     count = len(state.legs)
     if count == 0:
         out("  (no legs to choose from)")
@@ -585,8 +586,8 @@ if _TEXTUAL:
             Binding("ctrl+c", "cancel", "cancel the wizard", priority=True, show=False),
         ]
 
-        def __init__(self, geo, state: WizardState, save_path: Optional[Path],
-                     overwrite: bool, search: Optional[Callable] = None):
+        def __init__(self, geo, state: WizardState, save_path: Path | None,
+                     overwrite: bool, search: Callable | None = None):
             super().__init__()
             self.geo = geo
             self.state = state
@@ -603,21 +604,21 @@ if _TEXTUAL:
             self.form_fields: tuple[str, ...] = ()
             self.form_pos = 0
             self.form_draft: dict[str, str] = {}
-            self.form_country: Optional[Country] = None
-            self.form_edit_idx: Optional[int] = None
+            self.form_country: Country | None = None
+            self.form_edit_idx: int | None = None
             self.text_kind = ""            # currency | budget | save
             self.yesno_kind = ""           # delete | overwrite
-            self.pending_delete: Optional[int] = None
-            self.pending_overwrite: Optional[str] = None
-            self.undo_slot: Optional[tuple[int, LegEntry]] = None
+            self.pending_delete: int | None = None
+            self.pending_overwrite: str | None = None
+            self.undo_slot: tuple[int, LegEntry] | None = None
             self.data_sel = 1              # default selection: Balanced
-            self.saved_path: Optional[Path] = None
-            self.result: Optional[WizardResult] = None
+            self.saved_path: Path | None = None
+            self.result: WizardResult | None = None
             self._err_text = ""
             self._crash_error: str = ""
             self._esc_armed = False
-            self._trip: Optional[Trip] = None      # the trip being searched
-            self._report: Optional[Any] = None
+            self._trip: Trip | None = None      # the trip being searched
+            self._report: Any | None = None
             self._search_error: str = ""
             self._search_note = ""                 # e.g. "Thailand (3 of 5)"
             self._elapsed = 0.0
@@ -625,7 +626,7 @@ if _TEXTUAL:
             self._ticker = None
 
         # -- widgets -------------------------------------------------------
-        def compose(self) -> "ComposeResult":
+        def compose(self) -> ComposeResult:
             yield Static("eSIM itinerary wizard (keyboard only)", id="header")
             yield Static("", id="progress")
             yield Static("", id="body")
@@ -637,11 +638,11 @@ if _TEXTUAL:
             self._answer.can_focus = False      # only an open field may take focus
             self.refresh_screen()
 
-        def _st(self, id: str) -> "Static":
+        def _st(self, id: str) -> Static:
             return self.query_one(f"#{id}", Static)
 
         @property
-        def _answer(self) -> "Input":
+        def _answer(self) -> Input:
             return self.query_one("#answer", Input)
 
         def _open_input(self, value: str = "", placeholder: str = "") -> None:
@@ -899,7 +900,7 @@ if _TEXTUAL:
             self.mode = "form"
             self.refresh_screen()
 
-        def _parse_int(self, raw: str, what: str, minimum: int) -> Optional[int]:
+        def _parse_int(self, raw: str, what: str, minimum: int) -> int | None:
             if raw == "":
                 self._err(f"enter a whole number for {what}")
                 return None
@@ -1332,8 +1333,8 @@ if _TEXTUAL:
 
 
 
-def run_tui_wizard(geo, state: WizardState, save_path: Optional[Path],
-                   overwrite: bool, search: Optional[Callable] = None) -> WizardResult:
+def run_tui_wizard(geo, state: WizardState, save_path: Path | None,
+                   overwrite: bool, search: Callable | None = None) -> WizardResult:
     """Run the Textual wizard (blocks until the user finishes).
 
     ``mouse=False`` means the terminal is never asked to capture or report mouse
@@ -1370,9 +1371,9 @@ def wants_tui(stdin_tty: bool, stdout_tty: bool, stderr_tty: bool,
 
 def run_wizard(
     geo,
-    ask: Optional[Callable[[], str]] = None,
-    out: Optional[Callable[[str], None]] = None,
-    save_path: Optional[Path] = None,
+    ask: Callable[[], str] | None = None,
+    out: Callable[[str], None] | None = None,
+    save_path: Path | None = None,
     overwrite: bool = False,
     default_currency: str = DEFAULT_CURRENCY,
     default_daily: float = DEFAULT_DAILY_DATA,

@@ -17,14 +17,16 @@ provider diversity is not used to override it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 import httpx
 
-from . import catalog, config, coverage as cov_mod, filters, fx as fx_mod, geo
-from .models import Country, Fx, Leg, Plan, Report, Strategy, StrategyPlan, Trip
+from . import catalog, config, filters, geo
+from . import fx as fx_mod
+from .models import Fx, Leg, Plan, Report, Strategy, StrategyPlan, Trip
 
 FAMILY_ORDER = ["local_only", "whole_trip", "hybrid"]
 
@@ -36,10 +38,10 @@ class RecommendationEngine:
         data_dir: Path,
         use_cache: bool = True,
         include_capped: bool = False,
-        provider: Optional[str] = None,
+        provider: str | None = None,
         regional_candidate_limit: int = 60,
         speed_verified: bool = False,
-        speed_note: Optional[str] = None,
+        speed_note: str | None = None,
         strict_speed_cap: bool = False,
     ) -> None:
         self.client = client
@@ -55,8 +57,8 @@ class RecommendationEngine:
         self.regional_candidate_limit = regional_candidate_limit
         self.speed_verified = speed_verified
         self.speed_note = speed_note
-        self.geo: Optional[geo.Geo] = None
-        self.fx: Optional[Fx] = None
+        self.geo: geo.Geo | None = None
+        self.fx: Fx | None = None
         self.plans_by_slug: dict[str, list[Plan]] = {}
         self.plan_ids_by_slug: dict[str, set[str]] = {}
         self.plan_by_id: dict[str, Plan] = {}
@@ -66,7 +68,7 @@ class RecommendationEngine:
         self.fetch_status: dict[str, dict[str, Any]] = {}
 
     # ---- data loading -----------------------------------------------------
-    def load(self, trip: Trip, progress: Optional[Callable[[int, int, str], None]] = None) -> None:
+    def load(self, trip: Trip, progress: Callable[[int, int, str], None] | None = None) -> None:
         """Fetch everything the report needs.
 
         ``progress(step, total, label)`` is called before each destination's plan
@@ -136,7 +138,7 @@ class RecommendationEngine:
             return True
         if plan.is_daily_refill():
             return (plan.daily_cap_gb or 0.0) >= daily_target - 1e-9
-        need = sum(l.required_gb for l in legs)
+        need = sum(leg.required_gb for leg in legs)
         return plan.data_gb >= need - 1e-9
 
     def _validity_info(self, plan: Plan, activation_day: int, legs: list[Leg]) -> tuple[bool, bool]:
@@ -158,14 +160,14 @@ class RecommendationEngine:
         # A plan is activated once, at the earliest of the legs it serves (not
         # separately per leg). Only note it when that day is not the trip start.
         if activation_day > 1:
-            first = min(legs, key=lambda l: l.start_day)
+            first = min(legs, key=lambda leg: leg.start_day)
             out.append(
                 f"assumes '{plan.name}' is activated at travel day {activation_day} "
                 f"(arrival to {first.country.name}); activation terms: {plan.activation_type or 'unspecified'}"
             )
         if plan.period_days <= 0:
-            lo = min(l.start_day for l in legs)
-            hi = max(l.end_day for l in legs)
+            lo = min(leg.start_day for leg in legs)
+            hi = max(leg.end_day for leg in legs)
             out.append(
                 f"assumes '{plan.name}' validity spans travel days {lo}\u2013{hi} (listed period unknown)"
             )
@@ -179,7 +181,7 @@ class RecommendationEngine:
         return out
 
     # ---- candidate generation --------------------------------------------
-    def _best_local_plan(self, leg: Leg, trip: Trip) -> Optional[tuple[Plan, float, list[str], bool]]:
+    def _best_local_plan(self, leg: Leg, trip: Trip) -> tuple[Plan, float, list[str], bool] | None:
         cands: list[tuple[float, bool, Plan]] = []
         for plan in self.plans_by_slug.get(leg.country.slug, []):
             if not self._speed_ok(plan) or not self._provider_ok(plan) or not self._purchasable(plan):
@@ -208,7 +210,7 @@ class RecommendationEngine:
         # pricier plans needed to serve the whole trip in favour of small cheap
         # ones that can't meet any leg's data need.
         best: dict[frozenset, tuple[float, Plan, list[int]]] = {}
-        for pid, plan in self.plan_by_id.items():
+        for _pid, plan in self.plan_by_id.items():
             if not self._speed_ok(plan) or not self._provider_ok(plan) or not self._purchasable(plan):
                 continue
             covered = [i for i, _ in self.legs if self._covers_leg(plan, self.leg_by_idx[i])]
@@ -260,13 +262,13 @@ class RecommendationEngine:
             assumptions=_dedupe(assumptions),
         )
 
-    def _evaluate(self, trip: Trip) -> dict[str, Optional[Strategy]]:
+    def _evaluate(self, trip: Trip) -> dict[str, Strategy | None]:
         all_idx = [i for i, _ in self.legs]
-        local_picks: dict[int, Optional[tuple[Plan, float, list[str], bool]]] = {}
+        local_picks: dict[int, tuple[Plan, float, list[str], bool] | None] = {}
         for i, leg in self.legs:
             local_picks[i] = self._best_local_plan(leg, trip)
 
-        strategies: dict[str, Optional[Strategy]] = {
+        strategies: dict[str, Strategy | None] = {
             "local_only": None,
             "whole_trip": None,
             "hybrid": None,
@@ -333,7 +335,7 @@ class RecommendationEngine:
 
     # ---- budget -----------------------------------------------------------
     @staticmethod
-    def _budget_status(recommended: Optional[Strategy], trip: Trip) -> dict[str, Any]:
+    def _budget_status(recommended: Strategy | None, trip: Trip) -> dict[str, Any]:
         budget = trip.budget
         cost = recommended.total_cost if recommended else None
         if budget is None:
@@ -397,7 +399,7 @@ class RecommendationEngine:
         }
 
     # ---- diagnostics -------------------------------------------------------
-    def _diagnostics(self, trip: Trip, strategies: dict[str, Optional[Strategy]], local_picks: dict[int, Optional[Any]]) -> dict[str, Any]:
+    def _diagnostics(self, trip: Trip, strategies: dict[str, Strategy | None], local_picks: dict[int, Any | None]) -> dict[str, Any]:
         """Bucket each covering plan under the reason that actually rules it out.
 
         A plan is counted once, in the order the checks that would keep it out even if
@@ -465,9 +467,9 @@ class RecommendationEngine:
         # near-matches: per leg, the cheapest purchasable, non-speed-excluded plan that
         # is data-feasible but provably expires before the leg ends.
         near_matches: list[dict[str, Any]] = []
-        for i, leg in self.legs:
-            best_cost: Optional[float] = None
-            best_plan: Optional[Plan] = None
+        for _i, leg in self.legs:
+            best_cost: float | None = None
+            best_plan: Plan | None = None
             for plan in self.plans_by_slug.get(leg.country.slug, []):
                 if not self._provider_ok(plan) or not self._purchasable(plan):
                     continue
@@ -498,7 +500,7 @@ class RecommendationEngine:
 
         # unservable legs: no local pick and not covered by any regional candidate
         regional_covered: set[int] = set()
-        for _, plan, covered in self._regional_candidates(trip):
+        for _, _plan, covered in self._regional_candidates(trip):
             regional_covered.update(covered)
         unservable = []
         for i, leg in self.legs:
@@ -519,7 +521,7 @@ class RecommendationEngine:
             "fetch_failed_slugs": fetch_failed,
         }
 
-    def _no_solution_reason(self, trip: Trip, strategies: dict[str, Optional[Strategy]], diag: dict[str, Any]) -> Optional[str]:
+    def _no_solution_reason(self, trip: Trip, strategies: dict[str, Strategy | None], diag: dict[str, Any]) -> str | None:
         if any(strategies[k] is not None for k in FAMILY_ORDER):
             return None
         if diag["fetch_failed_slugs"]:
@@ -541,7 +543,7 @@ class RecommendationEngine:
         no_solution = self._no_solution_reason(trip, strategies, diag)
 
         feasible = [s for s in strategies.values() if s is not None and s.comparable]
-        recommended: Optional[Strategy] = None
+        recommended: Strategy | None = None
         if feasible:
             recommended = min(feasible, key=lambda s: (s.total_cost, s.purchase_count, FAMILY_ORDER.index(s.family)))
 
@@ -677,7 +679,7 @@ def _dedupe(items: list[str]) -> list[str]:
     return out
 
 
-def _round(x: Optional[float]) -> Optional[float]:
+def _round(x: float | None) -> float | None:
     if x is None:
         return None
     r = round(float(x), 2)

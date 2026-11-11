@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import httpx
 import respx
-
 from conftest import make_geo, mock_geo_routes
+
 from esimdb_checker.geo import Geo
 
 

@@ -8,14 +8,13 @@ the coverage resolver.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional
 
 import httpx
 
 from . import config, http
 from .models import Country
-
 
 # Common aliases for countries whose display name differs from the token users
 # are likely to type. Merged on top of the endpoint-provided names/slugs.
@@ -59,7 +58,7 @@ class Geo:
 
     # ---- loading ----------------------------------------------------------
     @classmethod
-    def load(cls, client: httpx.Client, data_dir: Path, use_cache: bool = True) -> "Geo":
+    def load(cls, client: httpx.Client, data_dir: Path, use_cache: bool = True) -> Geo:
         countries_raw, c_meta = http.fetch_json(
             client, config.countries_endpoint(), data_dir, use_cache
         )
@@ -99,7 +98,7 @@ class Geo:
         return getattr(self, "_last_manifests", {})
 
     # ---- resolution -------------------------------------------------------
-    def resolve_country(self, token: str) -> Optional[Country]:
+    def resolve_country(self, token: str) -> Country | None:
         t = token.strip()
         if not t:
             return None
@@ -135,7 +134,7 @@ class Geo:
     def region_codes_for(self, slug: str) -> set[str]:
         return self.region_codes.get(slug, set())
 
-    def region_for_alias(self, alias: str) -> Optional[str]:
+    def region_for_alias(self, alias: str) -> str | None:
         return self.region_alias.get(alias.lower())
 
     def all_country_tokens(self) -> set[str]:

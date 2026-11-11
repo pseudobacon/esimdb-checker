@@ -21,10 +21,9 @@ once, on purpose.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
-from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
+
 
 # ---------------------------------------------------------------------------
 # country
@@ -34,7 +33,7 @@ class Country:
     code: str
     name: str
     slug: str
-    region: Optional[str] = None
+    region: str | None = None
     subregions: tuple = ()
     popularity: int = 0
     aliases: tuple[str, ...] = ()
@@ -52,28 +51,28 @@ class Plan:
     id: str
     name: str
     provider: str
-    provider_slug: Optional[str]
+    provider_slug: str | None
     prices: dict[str, float]          # currency code -> price (USD always present)
     capacity_mb: int                   # 0 = unlimited pool; per-day amount when data_cap_per == "day"
     period_days: int                   # 0 = unknown validity
-    data_cap_per: Optional[str] = None # "day" (daily-refill) | None
-    speed_limit: Optional[float] = None   # kbps (None = not speed-capped)
-    reduced_speed: Optional[float] = None  # kbps
-    possible_throttling: Optional[bool] = None
-    activation_type: Optional[str] = None
-    source_slug: Optional[str] = None
+    data_cap_per: str | None = None # "day" (daily-refill) | None
+    speed_limit: float | None = None   # kbps (None = not speed-capped)
+    reduced_speed: float | None = None  # kbps
+    possible_throttling: bool | None = None
+    activation_type: str | None = None
+    source_slug: str | None = None
     provider_popularity: int = 0
     # Extra family attributes from the folded API (retained for provenance).
-    tethering: Optional[bool] = None
+    tethering: bool | None = None
     has_5g: bool = False
     is_low_latency: bool = False
     subscription: bool = False
-    subscription_period: Optional[str] = None
+    subscription_period: str | None = None
     networks: list = field(default_factory=list)
     has_ads: bool = False
     pay_as_you_go: bool = False
     new_user_only: bool = False
-    notes: Optional[str] = None
+    notes: str | None = None
 
     # ---- derived values ---------------------------------------------------
     @property
@@ -81,7 +80,7 @@ class Plan:
         return self.capacity_mb == 0
 
     @property
-    def usd_price(self) -> Optional[float]:
+    def usd_price(self) -> float | None:
         v = self.prices.get("USD")
         return float(v) if v is not None else None
 
@@ -93,7 +92,7 @@ class Plan:
         return self.capacity_mb / 1024.0
 
     @property
-    def daily_cap_gb(self) -> Optional[float]:
+    def daily_cap_gb(self) -> float | None:
         """Per-day data cap in GB, for daily-refill plans (capacity_mb is the per-day amount)."""
         if self.is_daily_refill():
             return self.capacity_mb / 1024.0
@@ -102,7 +101,7 @@ class Plan:
     def is_daily_refill(self) -> bool:
         return self.data_cap_per == "day"
 
-    def effective_total_mb(self, days: int) -> Optional[int]:
+    def effective_total_mb(self, days: int) -> int | None:
         """Total data deliverable over `days` (None when unlimited).
 
         Daily-refill plans deliver capacity_mb per day (so capacity_mb * days
@@ -114,7 +113,7 @@ class Plan:
             return self.capacity_mb * max(days, 1)
         return self.capacity_mb
 
-    def price_in(self, currency: str, fx: Optional["Fx"] = None) -> tuple[Optional[float], bool]:
+    def price_in(self, currency: str, fx: Fx | None = None) -> tuple[float | None, bool]:
         """Price in the requested currency, and whether it is price-comparable.
 
         Prefers a native price in the requested currency; otherwise converts the
@@ -131,7 +130,7 @@ class Plan:
             return self.usd_price * fx.rate, True
         return None, False
 
-    def price_per_gb(self, currency: str, fx: Optional["Fx"] = None) -> Optional[float]:
+    def price_per_gb(self, currency: str, fx: Fx | None = None) -> float | None:
         price, ok = self.price_in(currency, fx)
         if not ok or price is None or self.unlimited or self.data_gb <= 0:
             return None
@@ -175,13 +174,13 @@ class Plan:
 class Fx:
     base: str                      # "USD"
     currency: str                  # requested/target currency
-    rate: Optional[float]          # 1 USD -> rate units of `currency`
+    rate: float | None          # 1 USD -> rate units of `currency`
     source: str
     date: str
     available: bool
     note: str = ""
 
-    def convert_usd(self, usd: Optional[float]) -> Optional[float]:
+    def convert_usd(self, usd: float | None) -> float | None:
         if usd is None or not self.available or self.rate is None:
             return None
         return usd * self.rate
@@ -203,7 +202,7 @@ class Fx:
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Leg:
-    country: Optional[Country]   # None for a pure transfer leg (no destination)
+    country: Country | None   # None for a pure transfer leg (no destination)
     days: int          # charged destination days (>= 0; 0 = transfer leg)
     start_day: int     # 1-based travel-day index, inclusive (start > end for 0-day legs)
     end_day: int       # inclusive
@@ -220,7 +219,7 @@ class Leg:
 
     def label(self) -> str:
         if self.is_transfer:
-            s = f"transfer leg (no destination)"
+            s = "transfer leg (no destination)"
             if self.transfer_days:
                 s += f", {self.transfer_days} transfer day(s)"
             return s
@@ -246,7 +245,7 @@ class Trip:
     legs: tuple[Leg, ...]
     daily_data_gb: float
     currency: str
-    budget: Optional[float] = None  # total budget in `currency`, or None (unbounded)
+    budget: float | None = None  # total budget in `currency`, or None (unbounded)
 
     @property
     def total_days(self) -> int:
@@ -298,7 +297,7 @@ class Trip:
         }
 
 
-def _gb(v: Optional[float]) -> Optional[float]:
+def _gb(v: float | None) -> float | None:
     if v is None:
         return None
     # Avoid spurious float noise (e.g. 0.30000000000000004) for display/JSON.
@@ -324,10 +323,10 @@ class StrategyPlan:
     plan: Plan
     legs: tuple[int, ...]      # indices of the itinerary legs this plan serves
     activation_day: int        # travel-day the plan is activated on
-    cost: Optional[float]      # in the requested currency (None = not comparable)
+    cost: float | None      # in the requested currency (None = not comparable)
     comparable: bool
     assumptions: list[str] = field(default_factory=list)
-    url: Optional[str] = None  # provider page URL (filled by the engine)
+    url: str | None = None  # provider page URL (filled by the engine)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -347,7 +346,7 @@ class StrategyPlan:
 class Strategy:
     family: str                 # "local_only" | "whole_trip" | "hybrid"
     plans: tuple[StrategyPlan, ...]
-    total_cost: Optional[float]  # in the requested currency (None = not comparable)
+    total_cost: float | None  # in the requested currency (None = not comparable)
     currency: str
     comparable: bool
     meets_data: bool
@@ -382,8 +381,8 @@ class Report:
     source_urls: list[str]
     snapshot_manifest: dict[str, dict[str, Any]]
     fx: dict[str, Any]
-    recommended: Optional[Strategy]
-    strategies: dict[str, Optional[Strategy]]   # local_only / whole_trip / hybrid
+    recommended: Strategy | None
+    strategies: dict[str, Strategy | None]   # local_only / whole_trip / hybrid
     budget_status: dict[str, Any]
     diagnostics: dict[str, Any]
     totals: dict[str, Any]

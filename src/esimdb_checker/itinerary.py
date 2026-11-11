@@ -13,9 +13,10 @@ Repeated visits to the same country are distinct legs.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 from .fx import validate_currency_code
 from .models import Country, Leg, Trip, _gb
@@ -29,7 +30,7 @@ class CountryNotFoundError(StopError):
     """Raised when a destination cannot be resolved to a known country."""
 
 
-def parse_stop(token: str) -> tuple[Optional[str], int, int]:
+def parse_stop(token: str) -> tuple[str | None, int, int]:
     """Parse one stop into (country_token_or_None, days, transfer_days).
 
     Forms:
@@ -78,14 +79,14 @@ def parse_stop(token: str) -> tuple[Optional[str], int, int]:
 
 def parse_stops(
     stops: Iterable[str], geo
-) -> list[tuple[Optional[Country], int, int]]:
+) -> list[tuple[Country | None, int, int]]:
     """Parse and resolve stop tokens into ordered (country_or_None, days, transfer).
 
     Empty stops become (None, 0, 0) transfer legs. Destination names are resolved
     through the shared Geo resolver (exact/alias first, then a single unambiguous
     substring candidate).
     """
-    out: list[tuple[Optional[Country], int, int]] = []
+    out: list[tuple[Country | None, int, int]] = []
     for token in stops:
         name, days, transfer = parse_stop(token)
         if name is None:
@@ -103,10 +104,10 @@ def parse_stops(
 
 
 def build_trip(
-    stops: Iterable[tuple[Optional[Country], int, int]],
+    stops: Iterable[tuple[Country | None, int, int]],
     daily_data_gb: float,
     currency: str,
-    budget: Optional[float] = None,
+    budget: float | None = None,
 ) -> Trip:
     """Build a Trip from ordered (country_or_None, days, transfer_days) stops.
 
@@ -150,7 +151,7 @@ def _validate_stops(stops: list[dict[str, Any]]) -> None:
             raise StopError(f"stop #{i + 1} 'country' must be a string or null")
 
 
-def load_itinerary_file(path: Path) -> tuple[list[tuple[Optional[str], int, int]], dict[str, Any]]:
+def load_itinerary_file(path: Path) -> tuple[list[tuple[str | None, int, int]], dict[str, Any]]:
     """Load a saved itinerary. Returns (stops [(country, days, transfer)], settings)."""
     text = path.read_text(encoding="utf-8")
     try:
@@ -174,7 +175,7 @@ def load_itinerary_file(path: Path) -> tuple[list[tuple[Optional[str], int, int]
     else:
         raise StopError("itinerary file is missing 'daily_data_gb'")
     budget = obj.get("budget")
-    budget_currency_raw: Optional[Any] = None
+    budget_currency_raw: Any | None = None
     if isinstance(budget, dict):
         amount = _as_decimal(budget.get("amount"), "budget.amount")
         if amount is None or amount <= 0:
@@ -204,9 +205,9 @@ def load_itinerary_file(path: Path) -> tuple[list[tuple[Optional[str], int, int]
 def load_itinerary_trip(
     path: Path,
     geo,
-    daily_data_gb: Optional[float] = None,
-    currency: Optional[str] = None,
-    budget: Optional[float] = None,
+    daily_data_gb: float | None = None,
+    currency: str | None = None,
+    budget: float | None = None,
 ) -> Trip:
     """Load a saved itinerary file and build a Trip (destinations resolved via geo).
 
@@ -215,7 +216,7 @@ def load_itinerary_trip(
     Currency (and any override) is validated against the supported set.
     """
     stops, settings = load_itinerary_file(path)
-    resolved: list[tuple[Optional[Country], int, int]] = []
+    resolved: list[tuple[Country | None, int, int]] = []
     for name, days, transfer in stops:
         if name is None:
             resolved.append((None, days, transfer))
@@ -266,7 +267,7 @@ def save_itinerary_file(trip: Trip, path: Path, overwrite: bool = False) -> Path
     return path
 
 
-def _as_decimal(v: Any, label: str) -> Optional[Decimal]:
+def _as_decimal(v: Any, label: str) -> Decimal | None:
     if v is None:
         return None
     try:

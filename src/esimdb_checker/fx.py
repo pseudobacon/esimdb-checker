@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import httpx
 
@@ -75,7 +74,7 @@ def is_supported_currency(code) -> bool:
     return normalize_currency(code) in SUPPORTED_CURRENCIES
 
 
-def currency_name(code) -> Optional[str]:
+def currency_name(code) -> str | None:
     return SUPPORTED_CURRENCIES.get(normalize_currency(code))
 
 
@@ -89,7 +88,7 @@ def supported_currency_list_text() -> str:
     )
 
 
-def validate_currency_code(raw) -> tuple[Optional[str], Optional[str]]:
+def validate_currency_code(raw) -> tuple[str | None, str | None]:
     """Validate a currency code against the supported set.
 
     Returns ``(normalized_code, None)`` on success or ``(None, error)`` on
@@ -121,7 +120,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _fresh(data_dir: Path, currency: str) -> Optional[Fx]:
+def _fresh(data_dir: Path, currency: str) -> Fx | None:
     p = _cache_path(data_dir, currency)
     if not p.exists():
         return None

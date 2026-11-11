@@ -10,7 +10,6 @@ import json
 
 import pytest
 import respx
-
 from conftest import (
     build_plan_entry,
     build_plans_payload,
@@ -19,6 +18,7 @@ from conftest import (
     mock_geo_routes,
     mock_plans_route,
 )
+
 from esimdb_checker.cli import main
 
 P1 = make_provider("P1", "TestSim", "testsim", 500)

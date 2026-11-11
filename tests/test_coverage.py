@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-
 from conftest import make_geo
+
 from esimdb_checker.coverage import resolve_coverage
 
 

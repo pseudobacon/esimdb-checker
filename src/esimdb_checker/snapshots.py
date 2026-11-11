@@ -11,7 +11,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 def url_key(url: str) -> str:
@@ -23,7 +23,7 @@ def snapshot_paths(data_dir: Path, url: str) -> tuple[Path, Path]:
     return data_dir / f"{key}.json", data_dir / f"{key}.meta.json"
 
 
-def read_cache(data_dir: Path, url: str) -> Optional[bytes]:
+def read_cache(data_dir: Path, url: str) -> bytes | None:
     body_path, _ = snapshot_paths(data_dir, url)
     if body_path.exists():
         return body_path.read_bytes()
