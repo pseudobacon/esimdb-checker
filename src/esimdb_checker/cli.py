@@ -66,6 +66,10 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                    const=10.0, default=None, metavar="PCT",
                    help="recommend the fewest eSIMs whose total stays within PCT%% of the "
                         "cheapest answer (default 10%%)")
+    p.add_argument("--activate-lead-days", type=int, metavar="N", default=0,
+                   help="assume each eSIM is installed N days before the first arrival it "
+                        "serves, because arrival without data means no way to install it "
+                        "(validity is then measured from that earlier day; default 0 = on arrival)")
     p.add_argument("--refresh", action="store_true",
                    help="re-fetch from esimdb.com, bypassing the cache")
 
@@ -187,6 +191,7 @@ def _run_engine(client: httpx.Client, trip: Trip, args, data_dir: Path, use_cach
         provider=getattr(args, "provider", None),
         max_purchases=getattr(args, "max_purchases", None),
         fewer_sims_pct=getattr(args, "fewer_sims_pct", None),
+        activate_lead_days=getattr(args, "activate_lead_days", 0),
     )
     engine.load(trip, progress=progress)
     return engine.recommend(trip)
@@ -200,6 +205,9 @@ def _validate_purchase_args(args) -> None:
     pct = getattr(args, "fewer_sims_pct", None)
     if pct is not None and pct < 0:
         _fail("--fewer-sims must not be negative (0 means 'only if it costs no more')", 2)
+    lead = getattr(args, "activate_lead_days", 0)
+    if lead < 0:
+        _fail("--activate-lead-days must not be negative (0 means 'install on arrival')", 2)
 
 
 def _validate_output_args(args) -> None:

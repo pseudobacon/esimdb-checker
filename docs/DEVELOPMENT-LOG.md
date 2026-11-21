@@ -126,6 +126,57 @@ the real itinerary: the ladder still reads 1 £24.69 / 2 £18.63 / 3 £17.19 / 4
 6 £18.70, and the default recommendation is still 5 purchases at £17.12 — the fixes changed what
 is *claimed*, not what is *chosen*.
 
+### Installing before you fly: the lead-in day buys *fewer* eSIMs
+
+Asked whether the usual habit of activating an eSIM the day before arrival — because there may be
+no internet on arrival to install it — changes the optimal combination. It was not modellable:
+every activation in the engine happened exactly on the day of arrival (`min(leg.start_day)`), so
+the question could not be asked of it. Added `activate_lead_days` (CLI `--activate-lead-days N`,
+default 0 so existing results stay comparable), routed through one `_activation_day(legs)` helper
+used by the local candidates, the multi-leg candidates, the strategies, the diagnostics and the
+assumption text, so no site can forget it.
+
+The mechanism is worth stating precisely: **the lead costs validity, not data.** `required_gb` is
+a sum over the legs a plan serves, and the lead-in day is not one of them — you are not roaming
+yet. What changes is `activation_day + period_days - 1 >= leg.end_day`, which now has to hold one
+day earlier, so every purchase needs `N` more days of validity than the days it is on the road.
+
+Measured on the real itinerary, same cache:
+
+| lead | cheapest | ladder | |
+| --- | --- | --- | --- |
+| 0 | **5 eSIMs £17.12** | 1:24.69 2:18.63 3:17.19 4:17.21 5:17.12 6:18.70 | Taiwan 10 GB/**5 Days** £2.86 + SE Asia 1 day £0.87 |
+| 1 | **4 eSIMs £17.21** | 1:24.69 2:18.63 3:17.41 4:17.21 5:17.32 6:18.90 | the 5-day plan cannot span 6 days, so the 30-day one (£3.82) replaces it |
+| 2 | **3 eSIMs £17.41** | 1:24.69 2:19.01 3:17.41 4:17.51 5:17.51 6:19.09 | an Asia 20 GB/30d plan absorbs Taiwan, Thailand and China |
+
+Two things fell out that no one would have guessed:
+
+1. **The optimum moves the wrong way from intuition.** Pre-arrival activation does not push
+   towards more eSIMs, it pushes towards fewer — because the plans that become invalid are the
+   cheap tight ones (5 days for a 5-day visit) that make many-purchase splits cheap, while
+   long-validity plans absorb a free extra day. The recommendation went 5 → 4 → 3 as the lead
+   went 0 → 1 → 2.
+2. **A knock-on the engine found, not the reasoning.** The 30-day Taiwan plan that replaces the
+   dead 5-day one also spans the trip's *second* Taiwan visit (travel days 2 and 30), so it
+   deletes the separate 1-day SE Asia plan too. The 4-purchase answer had been sitting at £17.21
+   all along, 9p above the old winner; the lead day did not create it, it removed the thing that
+   was beating it.
+
+`--fewer-sims` is untouched by the lead: still 2 eSIMs at £18.63 at lead 0 and lead 1, same two
+plans, activation days moved 2→1 and 21→20. The 90-day whole-trip plan (£24.69) has validity to
+spare, so its price never moves — which is a useful sanity check that the lead shifts only what
+it should.
+
+Disclosure: the report header gains `activation: N days before the first arrival each plan
+serves`, each plan line prints the install day (including travel day 0 / negative, rendered as
+"the day before the trip starts"), each strategy carries the assumption in words, and a note
+states that data need is deliberately unaffected. Negative `N` is rejected before any network
+work.
+
+`pytest` 195 passed in 80.23s (3 new offline tests: the 3→2 purchase flip with the `buys one plan
+twice` row that only the degenerate split produces, the header/note disclosure with the default
+off, and the CLI flag reaching the engine plus its rejection of negatives), `ruff check .` clean.
+
 ---
 
 ## 2026-11-21 — Multi-leg plans were invisible: candidate generation fixed

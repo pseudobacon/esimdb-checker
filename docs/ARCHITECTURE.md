@@ -270,6 +270,13 @@ the same SKU twice is allowed — two copies of a plan are two legal purchases �
 the strategy's assumptions and on its frontier row (`buys_same_plan_twice`).
 
 Feasibility rules:
+- **Activation window:** a plan is installed once, `activate_lead_days` before the earliest of
+  the legs it serves (default 0 = on arrival), and must still be valid when the last of those
+  legs ends: `activation_day + period_days - 1 >= leg.end_day`. A negative activation day is
+  meaningful ("the day before the trip starts") and is rendered as such. The lead moves validity
+  only — `required_gb` is a sum over the legs served, never the lead-in day — so a lead time
+  removes cheap short-validity candidates and can make the optimum *cheaper in eSIM count*
+  (README: lead 0 → 5 eSIMs, lead 1 → 4, lead 2 → 3 on the sample trip).
 - **Coverage gate (authoritative):** a plan covers a leg only if its id is listed on
   that leg's destination page. A whole-trip plan must be listed on every leg's page.
 - **Speed caps (`speed_cap_signals`, default):** a plan is excluded only when it is

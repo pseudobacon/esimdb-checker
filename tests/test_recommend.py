@@ -639,3 +639,65 @@ def test_a_budget_outranks_the_convenience_option(tmp_path):
     broke = _run(tmp_path, payloads, _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)], budget=14.0))
     assert "would fit" not in broke.budget_status["message"]
     assert "No eSIM strategy meeting your data requirement" in broke.budget_status["message"]
+
+
+def test_activating_before_arrival_buys_fewer_esims(tmp_path):
+    """The lead-in day costs *validity*, not data - and it falls hardest on the cheap
+    short-validity plans that make many-eSIM splits cheap, so the optimum moves the
+    other way from intuition: fewer purchases."""
+    # Spain 5 days, Japan 3, Spain 5 (days 1-5, 7-9, 11-15)
+    trip = _trip([(ES, 5, 0), (JP, 3, 2), (ES, 5, 2)])
+    es_tight = entry("es-5-5", A, "Spain 10GB/5Days", 10000, 5, 3.0)     # exactly one visit
+    es_long = entry("es-20-30", A, "Spain 20GB/30Days", 20000, 30, 7.0)  # spans both visits
+    jp = entry("jp-5", B, "Japan 5GB/5Days", 5000, 5, 4.0)
+    payloads = [("spain", build_plans_payload([es_tight, es_long])),
+                ("japan", build_plans_payload([jp]))]
+
+    on_arrival = _run(tmp_path, payloads, trip, activate_lead_days=0)
+    assert on_arrival.recommended.purchase_count == 3          # 3 + 3 + 4
+    assert on_arrival.recommended.total_cost == pytest.approx(10.0)
+    assert {r["purchases"] for r in on_arrival.purchase_frontier} == {2, 3}
+
+    day_early = _run(tmp_path, payloads, trip, activate_lead_days=1)
+    # The 5-day plan now has to cover 6 days of validity, so it cannot serve a visit at
+    # all; the 30-day plan covers both Spain visits in one purchase.
+    assert day_early.recommended.purchase_count == 2
+    assert day_early.recommended.total_cost == pytest.approx(11.0)
+    rows = {r["purchases"]: r for r in day_early.purchase_frontier}
+    assert set(rows) == {2, 3}
+    assert rows[2]["total_cost"] == pytest.approx(11.0)
+    # Three purchases is only reachable by buying the one still-valid Spain plan twice.
+    assert rows[3]["buys_same_plan_twice"] is True
+
+    # The reason is stated, not implied - and it is validity, never the data need.
+    text = " ".join(day_early.notes)
+    assert "1 day before each plan's first arrival" in text
+    assert "Data need" in text
+    for plan in day_early.recommended.plans:
+        assert plan.activation_day == min(
+            day_early.trip.legs[i].start_day for i in plan.legs
+        ) - 1
+    assert "1 day before arrival" in " ".join(day_early.recommended.plans[0].assumptions)
+    assert on_arrival.diagnostics["data_insufficient_filtered"] == \
+        day_early.diagnostics["data_insufficient_filtered"]
+
+
+def test_activation_lead_days_is_disclosed_and_off_by_default(tmp_path):
+    trip = _trip([(ES, 5, 0)])
+    es = entry("es-10-30", A, "Spain 10GB/30Days", 10000, 30, 5.0)
+    payloads = [("spain", build_plans_payload([es]))]
+    quiet = _run(tmp_path, payloads, trip)
+    assert "activation:" not in render_console(quiet)
+    assert quiet.totals["activation_lead_days"] == 0
+
+    disclosed = _run(tmp_path, payloads, trip, activate_lead_days=2)
+    line = next(ln for ln in render_console(disclosed).splitlines()
+                if ln.startswith("Itinerary:"))
+    assert "activation: 2 days before the first arrival each plan serves" in line
+    assert disclosed.totals["activation_lead_days"] == 2
+    # travel day 0 means "before the trip starts", and the report has to say that rather
+    # than pointing at a day that does not exist.
+    assert disclosed.recommended.plans[0].activation_day == -1
+    # A negative travel day means "before the trip starts" - the report has to say that
+    # rather than point at a day the itinerary does not have.
+    assert "day before the trip starts" in render_console(disclosed)

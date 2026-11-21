@@ -56,6 +56,7 @@ def _itinerary_lines(report: Report) -> list[str]:
         f"currency {it.currency}"
         + (f", budget {_money(it.budget, it.currency)}" if it.budget is not None else ", no budget")
         + f", speed-capped: {_cap_state(report)}"
+        + _activation_state(report)
     ]
     lines.append(f"  {'Destination':<22} {'Days':>5}  {'Travel days':>12}  {'Required data':>14}")
     for leg in it.legs:
@@ -180,11 +181,24 @@ def _sp_legs(sp: StrategyPlan, report: Report) -> str:
 
 def _activation_text(sp: StrategyPlan, report: Report) -> str:
     first = report.trip.legs[sp.legs[0]]
-    if sp.activation_day == 1:
-        where = "at the start of the trip"
+    day, lead = sp.activation_day, first.start_day - sp.activation_day
+    if day < 1:
+        when = f"the day before the trip starts (travel day {day})"
+    elif day == 1 and lead <= 0:
+        when = "at the start of the trip"
     else:
-        where = f"on arrival to {first.country_name} (travel day {sp.activation_day})"
-    return where
+        when = f"travel day {day}"
+    gap = (f", {lead} day{'s' if lead != 1 else ''} before arrival to {first.country_name}"
+           if lead > 0 else "")
+    return f"{when}{gap}"
+
+
+def _activation_state(report: Report) -> str:
+    lead = (report.totals or {}).get("activation_lead_days") or 0
+    if not lead:
+        return ""
+    return (f", activation: {lead} day{'s' if lead != 1 else ''} before the first arrival "
+            f"each plan serves")
 
 
 def _recommendation_lines(report: Report) -> list[str]:

@@ -55,6 +55,7 @@ class RecommendationEngine:
         strict_speed_cap: bool = False,
         max_purchases: int | None = None,
         fewer_sims_pct: float | None = None,
+        activate_lead_days: int = 0,
     ) -> None:
         self.client = client
         self.data_dir = data_dir
@@ -87,6 +88,11 @@ class RecommendationEngine:
         # trades price for convenience, up to a tolerance in percent.
         self.max_purchases = max_purchases
         self.fewer_sims_pct = fewer_sims_pct
+        # Installation reality: an eSIM is switched on where the internet is known, which is
+        # usually the day (or flight) before crossing a border, because arrival with no data
+        # means no way to install it. Every validity check below measures from that earlier
+        # day, so a plan whose validity exactly matched the road days now falls short.
+        self.activate_lead_days = max(0, int(activate_lead_days or 0))
         self.manifests: dict[str, dict[str, Any]] = {}
         self.source_urls: list[str] = []
         self.fetch_status: dict[str, dict[str, Any]] = {}
@@ -172,6 +178,14 @@ class RecommendationEngine:
         need = sum(leg.required_gb for leg in legs)
         return plan.data_gb >= need - 1e-9
 
+    def _activation_day(self, legs: list[Leg]) -> int:
+        """Travel day a plan gets switched on for this set of legs.
+
+        The earliest arrival among them, moved earlier by ``activate_lead_days``. Travel day 0
+        is legal and means "the day before the trip starts" - installing at home on known wifi.
+        """
+        return min(leg.start_day for leg in legs) - self.activate_lead_days
+
     def _validity_info(self, plan: Plan, activation_day: int, legs: list[Leg]) -> tuple[bool, bool]:
         """Return (hard_ok, unverified). hard_ok is False if the plan provably
         expires before some leg ends. unverified is True if any served leg has an
@@ -190,13 +204,18 @@ class RecommendationEngine:
         self, plan: Plan, legs: list[Leg], activation_day: int, trip: Trip
     ) -> list[str]:
         out: list[str] = []
-        # A plan is activated once, at the earliest of the legs it serves (not
-        # separately per leg). Only note it when that day is not the trip start.
-        if activation_day > 1:
-            first = min(legs, key=lambda leg: leg.start_day)
+        # A plan is activated once, for the whole set of legs it serves (not separately per
+        # leg). Note it whenever that day is not simply the trip's first day.
+        first = min(legs, key=lambda leg: leg.start_day)
+        lead = first.start_day - activation_day
+        if lead > 0 or activation_day > 1:
+            when = (
+                f"travel day {activation_day}, {lead} day{'s' if lead != 1 else ''} before "
+                f"arrival to {first.country.name}" if lead > 0
+                else f"travel day {activation_day} (arrival to {first.country.name})"
+            )
             out.append(
-                f"assumes '{plan.name}' is activated at travel day {activation_day} "
-                f"(arrival to {first.country.name}); "
+                f"assumes '{plan.name}' is activated on {when}; "
                 f"activation terms: {plan.activation_type or 'unspecified'}"
             )
         if plan.period_days <= 0:
@@ -224,7 +243,7 @@ class RecommendationEngine:
                 continue
             if not self._data_feasible(plan, [leg], trip.daily_data_gb):
                 continue
-            hard_ok, unverified = self._validity_info(plan, leg.start_day, [leg])
+            hard_ok, unverified = self._validity_info(plan, self._activation_day([leg]), [leg])
             if not hard_ok:
                 continue
             cost, comparable = plan.price_in(trip.currency, self.fx)
@@ -235,7 +254,7 @@ class RecommendationEngine:
             return None
         cands.sort(key=lambda t: (t[0], t[1], -self.plan_by_id[t[2].id].provider_popularity))
         cost, unverified, plan = cands[0]
-        assumptions = self._assumptions_for(plan, [leg], leg.start_day, trip)
+        assumptions = self._assumptions_for(plan, [leg], self._activation_day([leg]), trip)
         return plan, cost, assumptions, not unverified
 
     def _regional_candidates(
@@ -322,7 +341,7 @@ class RecommendationEngine:
         """One leg set: enough data for those legs, and still alive when the last ends."""
         if not self._data_feasible(plan, legs, daily_data_gb):
             return False
-        act = min(leg.start_day for leg in legs)
+        act = self._activation_day(legs)
         return self._validity_info(plan, act, legs)[0]
 
     @staticmethod
@@ -550,7 +569,7 @@ class RecommendationEngine:
         for group, plan in groups:
             idxs = sorted(leg_of[b] for b in range(n) if group >> b & 1)
             s_legs = [self.leg_by_idx[i] for i in idxs]
-            act = min(lg.start_day for lg in s_legs)
+            act = self._activation_day(s_legs)
             cost, comparable = plan.price_in(trip.currency, self.fx)
             assump = self._assumptions_for(plan, s_legs, act, trip)
             seen[plan.id] = seen.get(plan.id, 0) + 1
@@ -796,7 +815,7 @@ class RecommendationEngine:
             distinct = {lg.country.name for lg in covered}
             if (len(covered) >= 2 and len(distinct) >= 2 and plan.period_days > 0
                     and self._data_feasible(plan, covered, trip.daily_data_gb)):
-                act = min(lg.start_day for lg in covered)
+                act = self._activation_day(covered)
                 cost, comparable = plan.price_in(trip.currency, self.fx)
                 # Only price-comparable plans can be weighed against the recommendation,
                 # so an unpriceable one is not worth a line here (it can never be bought
@@ -836,7 +855,7 @@ class RecommendationEngine:
                     continue
                 if not self._data_feasible(plan, [leg], trip.daily_data_gb):
                     continue
-                hard_ok, _ = self._validity_info(plan, leg.start_day, [leg])
+                hard_ok, _ = self._validity_info(plan, self._activation_day([leg]), [leg])
                 if hard_ok:
                     continue
                 cost, comparable = plan.price_in(trip.currency, self.fx)
@@ -1114,6 +1133,7 @@ class RecommendationEngine:
             "regional_candidates_truncated": self._regional_truncated,
             "regional_scope_search": self._regional_scope_mode,
             "partition_search": self._partition_search,
+            "activation_lead_days": self.activate_lead_days,
             "purchase_counts_feasible": sorted(per_k),
             "feasible_families": [k for k in FAMILY_ORDER if strategies[k] is not None],
         }
@@ -1160,6 +1180,16 @@ class RecommendationEngine:
                     f"for {_money(policy['convenience_cost'], trip.currency)}) to stay "
                     f"within the budget of {_money(trip.budget, trip.currency)}."
                 )
+        if self.activate_lead_days:
+            lead = self.activate_lead_days
+            day_word = "day" if lead == 1 else "days"
+            notes.append(
+                f"Validity is counted from {lead} {day_word} before each plan's first arrival "
+                f"(installed where the internet is known, not on arrival), so each purchase "
+                f"needs {lead} more validity {day_word} than the road days it serves. Data need "
+                f"is unchanged: the allowance still covers only the legs it serves, not the "
+                f"lead-in {day_word}."
+            )
         if self._partition_search != "exact":
             notes.append(
                 f"With more than {_MAX_PARTITION_LEGS} legs, the purchase-count search "

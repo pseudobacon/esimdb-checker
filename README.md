@@ -149,6 +149,7 @@ esimdb-checker fetch "https://esimdb.com/api/client/countries"
 | `--strict-speed-cap` | also exclude plans throttled only after the allowance | off |
 | `--max-purchases N` | recommend the cheapest strategy that buys at most N eSIMs | no limit |
 | `--fewer-sims [PCT]` | recommend the fewest eSIMs within PCT% of the cheapest total | off (`PCT` 10) |
+| `--activate-lead-days N` | install each eSIM N days before the first arrival it serves, and count validity from that earlier day | `0` (install on arrival) |
 | `--json` | print the full typed report as JSON to stdout | console text |
 | `--md` | write a Markdown report (with `--out`, default `report.md`) | — |
 | `--out FILE` | output file for `--md`, or for console text when `--md`/`--json` are absent; with `--json` also copies the JSON there while stdout stays clean | — |
@@ -277,6 +278,31 @@ esimdb-checker recommend --itinerary trip.json --fewer-sims       # fewest withi
 esimdb-checker recommend --itinerary trip.json --fewer-sims 3     # tighter tolerance
 esimdb-checker recommend --itinerary trip.json --max-purchases 2  # hard limit, whatever it costs
 ```
+
+**Installing before you fly can change the answer.** An eSIM needs internet to install, and
+arrival does not guarantee any, so most people install it the day before — on the flight, at the
+hotel, at home. That costs **validity, not data**: the allowance still only has to cover the days
+on the road, but the validity window now starts early and every purchase needs one more day of
+it. This cuts against intuition, because the plans that die are the cheap short-validity local
+ones that make many-eSIM splits cheap:
+
+| lead time | cheapest answer | why it moved |
+| --- | --- | --- |
+| 0 days (default: install on arrival) | **5 eSIMs, £17.12** | includes a Taiwan 10 GB/**5 Days** plan (£2.86) and a 1-day SE Asia plan (£0.87) |
+| `--activate-lead-days 1` | **4 eSIMs, £17.21** | the 5-day plan cannot span 6 days of validity, so the 30-day one (£3.82) replaces it — and covers the trip's *second* Taiwan visit as well, deleting the 1-day plan |
+| `--activate-lead-days 2` | **3 eSIMs, £17.41** | an Asia 20 GB/30d plan absorbs the Taiwan, Thailand and China visits |
+
+One day of lead time buys **fewer** eSIMs, for 9p more than the no-lead answer. The convenience
+options are untouched (still 2 eSIMs at £18.63 at either lead time) because those plans had
+validity to spare; a long-validity plan absorbs a lead-in day for free.
+
+```bash
+esimdb-checker recommend --itinerary trip.json --activate-lead-days 1
+```
+
+The default stays 0 (install on arrival) so results stay comparable with older runs; the report
+header states the assumption either way, and each plan prints the day it is assumed to be
+installed on — including travel day 0, meaning "the day before the trip starts".
 
 `--budget` is read in the trip's own currency — for `--itinerary`, the currency saved in the
 file, not the `--currency` default — so `--budget 20` against a GBP itinerary means £20. Pass

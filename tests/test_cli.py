@@ -122,3 +122,25 @@ def test_budget_currency_is_converted_into_the_trip_currency(tmp_path, capsys):
     # 20 EUR -> USD at 1/0.92, then GBP at 0.79
     assert data["budget_status"]["budget"] == pytest.approx(20 / 0.92 * 0.79, abs=1e-6)
     assert data["budget_status"]["currency"] == "GBP"
+
+
+def test_activate_lead_days_reaches_the_engine(tmp_path, capsys):
+    path = _itinerary_file(tmp_path, "GBP")
+    with respx.mock(assert_all_called=False) as router:
+        mock_geo_routes(router)
+        mock_fx_route(router, "GBP", 0.79)
+        mock_plans_route(router, "spain", _recommend_payload())
+        rc = main([
+            "--data-dir", str(tmp_path),
+            "recommend", "--itinerary", str(path),
+            "--activate-lead-days", "1", "--json", "--refresh",
+        ])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["totals"]["activation_lead_days"] == 1
+    # A negative lead means "install after arriving", which is not a thing.
+    with pytest.raises(SystemExit) as exc:
+        main(["--data-dir", str(tmp_path), "recommend", "spain", "--days", "9",
+              "--activate-lead-days", "-1", "--json"])
+    assert exc.value.code == 2
+    assert "must not be negative" in capsys.readouterr().err

@@ -17,7 +17,7 @@ day counts, data need, validity and budget. Research only — it never buys or a
 | --- | --- |
 | Package | `esimdb-checker` 0.1.0, `src/` layout, Python 3.10+, console script `esimdb-checker` |
 | Runtime deps | `httpx`, `textual` — **no browser, no Playwright at runtime** |
-| Tests | **192 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
+| Tests | **195 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
 | Lint | `ruff check .` **clean, exit 0**. Pre-existing debt (174 findings at the baseline commit) swept in two passes — see DEVELOPMENT-LOG. |
 | Type check | none configured (`mypy` not installed, no config) |
 | CI | none |
@@ -39,6 +39,8 @@ esimdb-checker recommend … --budget 18         -> budget £18.00 respected (th
 esimdb-checker recommend … --budget 17.5 --max-purchases 2
      -> "A 3-purchase strategy at £17.19 would fit - a purchase policy is what ruled it out"
 esimdb-checker recommend … --budget 18 --fewer-sims -> 5 purchases: the 2-eSIM split busts £18
+esimdb-checker recommend … --activate-lead-days 1 -> 4 purchases £17.21 (lead 0: 5 £17.12;
+     lead 2: 3 £17.41) — a longer install lead buys FEWER eSIMs; see DEVELOPMENT-LOG 2026-11-22
 python -m ruff check .                        -> All checks passed (exit 0)
 esimdb-checker recommend --itinerary …        -> console, --json, --md, --strict-speed-cap, --include-capped
 pty-driven wizard walkthrough                 -> see README "Verified in a terminal"
@@ -102,6 +104,15 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
     ladder is also priced with the same currency clock (`vs_cheapest_pct` is null, not zero, when
     no floor exists), and the contiguous-window fallback says "fewest purchases found" because
     above 10 legs it does not search every split. Fixed after review; see DEVELOPMENT-LOG 2026-11-22.
+11. **Installation happens where the internet is known.** `activate_lead_days`
+    (`--activate-lead-days N`, default 0) moves every activation to N days before the earliest leg a
+    plan serves — through one `_activation_day(legs)` helper used by local candidates, multi-leg
+    candidates, strategies, diagnostics and the assumption text, so no site can forget it. It shifts
+    **validity only**: data need is a sum over served legs and the lead-in day is not one of them.
+    The consequence is measured and counter-intuitive — tight short-validity plans are the cheap glue
+    of many-purchase splits, so a longer lead moves the optimum to *fewer* eSIMs (sample trip: 5 → 4
+    → 3 as the lead goes 0 → 1 → 2). A negative activation day is valid output and renders as "the day
+    before the trip starts".
 
 ## Known debt / open items
 
