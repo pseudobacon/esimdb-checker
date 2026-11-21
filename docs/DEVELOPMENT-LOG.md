@@ -5,7 +5,50 @@ the current-state snapshot is in [HANDOFF.md](HANDOFF.md).
 
 ---
 
-## 2026-11-11 — Lint sweep completed
+## 2026-11-21 — Published to GitHub
+
+Repository: **https://github.com/pseudobacon/esimdb-checker** — owner `pseudobacon` (the
+authenticated GitHub account, confirmed with `gh auth status` rather than inferred from the Git
+identity), **visibility PUBLIC**, default branch `main`.
+
+Sequence, because it matters for who did what: on 2026-11-11 the work was committed locally as
+`a8a80fd` but could not be pushed (no credentials on the machine — recorded in the entry below).
+The user then installed `gh`, authenticated, created the repository and pushed it themselves as
+`48daa0f`, which also swept up the in-progress lint fixes. Two things followed here: the remaining
+43 `E501` findings were finished as `5b6315e`, and the visibility the user had asked for
+(private) differed from what had been created (public) — raised explicitly, and the user chose to
+**keep it public**.
+
+Post-push verification, run after the push and not before (state at the `5b6315e` push; a
+later docs-only commit moved the branch tip on from it):
+
+```
+git ls-remote origin refs/heads/main   5b6315e50e207a96b9669984a01cf1207e8f31a7
+git rev-parse HEAD                     5b6315e50e207a96b9669984a01cf1207e8f31a7   MATCH
+gh repo view ... visibility            PUBLIC        defaultBranchRef main
+push                                   48daa0f..5b6315e main -> main   (fast-forward, no force)
+working tree                           clean; no untracked non-ignored files
+```
+
+Exclusions verified against **GitHub's own tree** (`git/trees/<sha>?recursive=1`, 31 blobs), not
+the local index — `itinerary.json`, `.cache/`, `report.md`/`report.json`, `.venv/`,
+`__pycache__/`, `.pytest_cache/`, `.ruff_cache/`, `.env` are each **absent**. The full six-commit
+history is on the remote: `0f63cac → 41227f6 → f0988ff → a8a80fd → 48daa0f → 5b6315e`.
+
+Nothing was deleted locally to achieve that: `itinerary.json` (644 B) and `.cache/` (14 MB) are
+still on disk, merely ignored. No secrets were found in any blob in history, so no rewrite was
+needed and none was performed.
+
+Two consequences of "public, no licence", both recorded in `docs/HANDOFF.md`: default copyright
+applies (no reuse rights granted), and the missing `LICENSE` is now more visible rather than more
+urgent to invent — the licence field stays removed until a choice is made deliberately.
+
+Also corrected here: this log and `docs/HANDOFF.md` were written on 2026-11-11 but the session
+resumed on 2026-11-21, so the dates on the sweep entry and the current-state checks were wrong.
+
+---
+
+## 2026-11-21 — Lint sweep completed
 
 `ruff check .` (rules `E,F,W,I,UP,B`, line length 100) had been failing with **174 findings at
 the baseline commit**. It now reports no findings. Done in two passes:
@@ -34,6 +77,11 @@ JSON     25168 B  identical
 console   6849 B  identical apart from the generation timestamp
 Markdown  6259 B  identical apart from the generation timestamp
 ```
+
+The first attempt at that comparison was worthless and quietly so: running HEAD's CLI from a
+worktree still imported the editable-installed package (cwd is not a package root), so both runs
+executed the *new* code and "agreed". Caught by printing `esimdb_checker.__file__`; the real
+comparison forces HEAD with `PYTHONPATH`.
 
 An automated scan of every implicitly-concatenated literal pair also flagged no doubled or lost
 space at a join.

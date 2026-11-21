@@ -3,7 +3,7 @@
 Compact snapshot. Design detail lives in [ARCHITECTURE.md](ARCHITECTURE.md); the dated
 history lives in [DEVELOPMENT-LOG.md](DEVELOPMENT-LOG.md).
 
-Snapshot date: **2026-11-11**.
+Snapshot date: **2026-11-21**.
 
 ## What this is
 
@@ -23,7 +23,7 @@ day counts, data need, validity and budget. Research only — it never buys or a
 | CI | none |
 | Publishing | Published at `https://github.com/pseudobacon/esimdb-checker` — **public** (chosen deliberately), default branch `main`, `origin` points there |
 
-## Checks that were actually run (2026-11-11)
+## Checks that were actually run (2026-11-21)
 
 ```
 python -m pytest tests/ -p no:cacheprovider   -> 173 passed in 88.55s
