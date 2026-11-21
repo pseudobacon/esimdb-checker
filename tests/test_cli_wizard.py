@@ -109,6 +109,33 @@ def test_wizard_console_report_printed_exactly_once(tmp_path, monkeypatch):
     assert "Currency for prices and budget" in err.getvalue()   # questions stay in the wizard
 
 
+def test_wizard_show_purchases_reaches_the_report(tmp_path, monkeypatch):
+    """The wizard accepts the shared flag and the report actually honours it.
+
+    This is the 'a flag the wizard accepts but ignores' defect class: the plain path is
+    covered by test_cli.py, but only an end-to-end run proves the interview path forwards
+    the namespace to the engine. This scenario prices exactly one rung (two purchases of the
+    same plan, whole-trip infeasible on data), so the other count must fail loudly.
+    """
+    out, err = fake_tty(monkeypatch, WIZARD_ANSWERS)
+    with _mocked(tmp_path):
+        rc = main(wizard_args(tmp_path, "--show-purchases", "2"))
+    assert rc == 0
+    text = out.getvalue()
+    assert "What 2 eSIMs would buy" in text
+    block = text.split("What 2 eSIMs would buy", 1)[1].split("RECOMMENDED", 1)[0]
+    # The row buys the same plan twice; that assumption must be stated, not just the bits.
+    assert "buys the same plan more than once" in block
+
+    # A count nothing buys is still an error through the wizard, not a silent no-op.
+    out, err = fake_tty(monkeypatch, WIZARD_ANSWERS)
+    with _mocked(tmp_path):
+        rc = rc_of(wizard_args(tmp_path, "--show-purchases", "1"))
+    assert rc == 2
+    assert "no feasible option buys [1]" in err.getvalue()
+    assert REPORT_MARKER not in out.getvalue()
+
+
 def test_wizard_json_stdout_is_pure_json(tmp_path, monkeypatch):
     # stdout is a pipe: the interview must move to stderr and stdout must parse.
     out, err = fake_tty(monkeypatch, WIZARD_ANSWERS, out_tty=False)

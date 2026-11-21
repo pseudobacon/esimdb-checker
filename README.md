@@ -290,9 +290,13 @@ esimdb-checker recommend --itinerary trip.json --show-purchases all
 ```
 
 Each named row gets the same detail as the recommendation — plan, provider, install day, which
-legs it serves, price, data and validity — because an alternative you are being asked to weigh
-should not be described in less detail than the answer. It changes nothing about what is
+legs it serves, price, data and validity, and the same verification assumptions (activation
+timing, validity span, any accepted speed cap) — because an alternative you are being asked to
+weigh should not be described in less detail than the answer. It changes nothing about what is
 recommended; a count nothing feasible buys is an error naming the counts that do exist.
+`all` expands every rung and is deliberately not capped: unlike the capped diagnostics lists,
+it is an explicit request, and the compact ladder table above the blocks already shows how
+many rungs there are.
 
 **Installing before you fly is the model, and it changes the answer.** An eSIM needs internet to
 install and arrival does not guarantee any, so a plan is assumed to be installed the day before
@@ -343,10 +347,49 @@ different window of the trip, stays visible instead of being silently outranked)
 the cheapest strategy is within budget (and, if not, the compound 10% steps needed to relax
 it).
 
+### The JSON report
+
+`--json` prints the full typed report to stdout (the interview questions, if any, go to
+stderr). The fields added for the ladder and for `--show-purchases`:
+
+- `purchase_frontier` — one object per feasible number of eSIMs, in count order:
+  `purchases`, `total_cost`, `currency`, `family` (`whole_trip` / `hybrid` / `local_only`),
+  `vs_cheapest` and `vs_cheapest_pct` against the cheapest rung, `recommended` (true on the
+  chosen rung), `buys_same_plan_twice`, and `plans` — one entry per purchase with `name`,
+  `provider`, `price`, `currency`, `legs` (destination names) and `activation_day` (the travel
+  day that purchase is assumed to be installed on; `0` means the day before the trip starts).
+  The expanded "What N eSIMs would buy" blocks in console/Markdown are rendered from these
+  rows — the JSON carries the same data, not a separate listing.
+- `totals.show_purchases` — the counts `--show-purchases` asked for, in ladder order; empty
+  (or absent) when the flag was not given. It records what was requested so a saved report
+  says what its text output expanded.
+- `purchase_policy` — how the recommendation was chosen: `rule` (`cheapest`, `fewer_purchases`,
+  `fewest_within_limit`, or `max_purchases`), the tolerance/limit it ran under, and
+  `budget_over_convenience` when the budget refused the convenient option and bought the
+  cheapest instead.
+
+```json
+{
+  "purchase_frontier": [
+    {"purchases": 2, "total_cost": 18.63, "currency": "GBP", "family": "hybrid",
+     "vs_cheapest": 1.42, "vs_cheapest_pct": 8.2, "recommended": false,
+     "buys_same_plan_twice": false,
+     "plans": [
+       {"name": "…", "provider": "…", "price": 9.31, "currency": "GBP",
+        "legs": ["Spain", "France"], "activation_day": 0},
+       {"name": "…", "provider": "…", "price": 9.32, "currency": "GBP",
+        "legs": ["Japan"], "activation_day": 10}
+     ]}
+  ],
+  "totals": {"show_purchases": [2]},
+  "purchase_policy": {"rule": "cheapest"}
+}
+```
+
 ## Testing
 
 ```bash
-uv run pytest                 # 185 offline tests (mocked API + headless TUI), no network
+uv run pytest                 # 202 offline tests (mocked API + headless TUI), no network
 uv run ruff check .           # lint - clean, exit 0
 ```
 

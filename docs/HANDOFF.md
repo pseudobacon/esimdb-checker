@@ -17,7 +17,7 @@ day counts, data need, validity and budget. Research only — it never buys or a
 | --- | --- |
 | Package | `esimdb-checker` 0.1.0, `src/` layout, Python 3.10+, console script `esimdb-checker` |
 | Runtime deps | `httpx`, `textual` — **no browser, no Playwright at runtime** |
-| Tests | **199 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
+| Tests | **202 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
 | Lint | `ruff check .` **clean, exit 0**. Pre-existing debt (174 findings at the baseline commit) swept in two passes — see DEVELOPMENT-LOG. |
 | Type check | none configured (`mypy` not installed, no config) |
 | CI | none |
@@ -56,11 +56,12 @@ esimdb-checker recommend --itinerary …        -> console, --json, --md, --stri
 pty-driven wizard walkthrough                 -> see README "Verified in a terminal"
 ```
 
-## Open work — `--show-purchases`
+## `--show-purchases` — completed 2026-11-22
 
-Started and committed 2026-11-22, working but **not finished**. It answers a real complaint: the
-ladder priced six ways to buy the trip while only the recommendation said what you would install,
-so weighing the 3-eSIM row meant re-running the tool once per row.
+Started and committed 2026-11-22 (`895f6c8`), loose ends closed the same day — this section now
+records the finished state, not open work. It answers a real complaint: the ladder priced six
+ways to buy the trip while only the recommendation said what you would install, so weighing the
+3-eSIM row meant re-running the tool once per row.
 
 What exists: `--show-purchases N[,N…]|all` in `_add_engine_args` (so `recommend` and
 `recommend-wizard` both accept it); `_parse_show_purchases` for syntax; counts resolved against
@@ -69,40 +70,27 @@ What exists: `--show-purchases N[,N…]|all` in `_add_engine_args` (so `recommen
 per row, deliberately absent from `to_dict()`); `report._expanded_rows()` for console and an
 equivalent block in `render_markdown`; `report._buy_lines()` factored out of the recommendation
 block so both renderers share one implementation; `activation_day` added to each
-`purchase_frontier[].plans` entry in `--json`. Four tests: three in `test_recommend.py` (expansion
-detail, infeasible count, Markdown), one in `test_cli.py` (silent by default, counts, `all`, both
-error paths).
+`purchase_frontier[].plans` entry in `--json`. Expanded rows print the same
+`verification assumptions:` block as the recommendation (activation timing, validity span, an
+accepted speed cap) in both renderers.
 
-Left to do, roughly in order of value:
+The five loose ends from the first commit, all closed:
 
-1. **Expanded rows omit the verification assumptions.** `_expanded_rows()` calls `_buy_lines()`
-   and stops; the recommendation block additionally prints `verification assumptions:` with the
-   activation-terms and speed-cap-acceptance lines. The helper's docstring promises "the same
-   detail as the answer", so either add the assumptions (`for a in s.assumptions:` under the buy
-   list, indented like the recommendation's) or narrow the claim. A speed-capped alternative
-   currently discloses the cap only via the `⚠` in `_plan_bits`.
-2. **The wizard path is plumbed but untested.** `cmd_recommend_wizard` calls
-   `_validate_purchase_args` (cli.py:408) and `_run_engine` with the same namespace (cli.py:516),
-   so the flag reaches it — never verified through a Pilot test. This is the exact defect class
-   of "a flag the wizard accepts and then ignores"; add `tests/test_cli_wizard.py` coverage or
-   state in `--help` that it is console-only output.
-3. **No DEVELOPMENT-LOG entry yet.** It should record the complaint (a six-row ladder with one
-   install list), the `ladder_strategies` field and why it stays out of `to_dict()`, the shared
-   `_buy_lines()` and the reason an alternative must be described in the same detail as the
-   answer, and the exit-2 behaviour on an infeasible count instead of a silent no-op.
-4. **`--show-purchases all` is uncapped.** Six rows on the sample trip; a 12-leg trip prints
-   twelve blocks of up to twelve plans. Other detail is capped by `_DETAIL_CAP` with `*_total`
-   carrying the real figure (see decision 4). Decide whether `all` needs a ceiling or a note.
-5. **`--json` shape is undocumented.** `totals.show_purchases` and the new
-   `purchase_frontier[].plans[].activation_day` have no schema doc anywhere; README describes the
-   flags, not the payload. Worth one section if the JSON is ever consumed by another tool.
+1. **Assumptions on expanded rows** — added under the buy list in console and Markdown; a
+   speed-capped alternative is no longer disclosed only via the `⚠` in `_plan_bits`.
+2. **Wizard path tested end-to-end** (`tests/test_cli_wizard.py`) — the flag reaches the report
+   through the interview, and a count no strategy buys exits 2 with no report printed.
+3. **DEVELOPMENT-LOG entry written** (2026-11-22, "The ladder priced six rows but explained one").
+4. **`all` decided uncapped** — an explicit request (unlike the capped diagnostics lists), the
+   compact ladder table above the blocks already shows the rung count, and capping would
+   reintroduce the per-row re-run the flag removes. Recorded in the README next to the flag.
+5. **JSON shape documented** — README "The JSON report": `purchase_frontier` rows,
+   `plans[].activation_day`, `totals.show_purchases`, `purchase_policy`.
 
-Verified so far: the four new tests, `tests/test_recommend.py` + `tests/test_cli.py` in full,
-`ruff check .` clean, and every real-data line in the checks block above run by hand on
-`asia-2026.itinerary.json`. The full suite was then re-run offline after the change: **199 tests,
-no failures, exit 0**. (Run it as `python -m pytest tests/ -p no:cacheprovider -q`; `pyproject.toml`
-also sets `addopts = "-q"`, and in a redirected run the "N passed" summary line was absent while
-every dot was printed — check the exit code, not the last line.)
+Verified: full suite offline — **202 tests, no failures, exit 0** — and `ruff check .` clean
+(run as `python -m pytest tests/ -p no:cacheprovider -q`; `pyproject.toml` also sets
+`addopts = "-q"`, and in a redirected run the "N passed" summary line was absent while every dot
+was printed — check the exit code, not the last line).
 
 ## Where things live
 
@@ -175,12 +163,15 @@ every dot was printed — check the exit code, not the last line.)
 
 11. **An alternative must be described in the same detail as the answer.** `--show-purchases`
     expands "Cost of convenience" rows into install lists using `_buy_lines()`, the same helper the
-    recommendation uses, so the two cannot drift in wording or detail. It is reporting, not
-    choosing: nothing about which strategy is recommended moves. Rows are named by purchase count,
-    validated against the rows that actually exist, and an impossible count exits 2 naming the
-    feasible ones rather than printing nothing. `Report.ladder_strategies` carries the live
-    strategies and stays out of `to_dict()` because `purchase_frontier` already publishes that
-    information. See DEVELOPMENT-LOG (to be written) and "Open work" above.
+    recommendation uses, so the two cannot drift in wording or detail — and the expanded rows now
+    carry the same `verification assumptions:` block (activation timing, validity span, an accepted
+    speed cap), so a capped alternative is not disclosed less honestly than the answer. It is
+    reporting, not choosing: nothing about which strategy is recommended moves. Rows are named by
+    purchase count, validated against the rows that actually exist, and an impossible count exits 2
+    naming the feasible ones rather than printing nothing. `Report.ladder_strategies` carries the
+    live strategies and stays out of `to_dict()` because `purchase_frontier` already publishes that
+    information. `all` is deliberately uncapped (explicit request; the ladder table shows the rung
+    count). See DEVELOPMENT-LOG 2026-11-22 and the "completed" section above.
 
 ## Known debt / open items
 

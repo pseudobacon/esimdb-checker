@@ -151,7 +151,9 @@ def _expanded_rows(report: Report) -> list[str]:
 
     The ladder prices every number of eSIMs, but only the recommendation says what you would
     install - so comparing rows meant re-running the tool once per row. These blocks price a
-    row and then spell it out, in the same words the recommendation uses.
+    row and then spell it out, in the same words the recommendation uses: the same install
+    list, and the same verification assumptions (activation timing, validity span, any speed
+    cap that was accepted), so an alternative is never described less honestly than the answer.
     """
     wanted = (report.totals or {}).get("show_purchases") or []
     if not wanted:
@@ -173,6 +175,10 @@ def _expanded_rows(report: Report) -> list[str]:
             f"({_money(row['total_cost'], row['currency'])}, {vs}){tag}:"
         )
         lines.extend(_buy_lines(report, s))
+        if s.assumptions:
+            lines.append("  verification assumptions:")
+            for a in s.assumptions:
+                lines.append(f"    • {a}")
     return lines
 
 
@@ -542,6 +548,11 @@ def render_markdown(report: Report) -> str:
                 w(f"- **{sp.plan.name}** — {sp.plan.provider}: {_money(sp.cost, s.currency)}, "
                   f"activate {_activation_text(sp, report)}, serves {_sp_legs(sp, report)}, "
                   f"{_plan_bits(sp.plan)}")
+            if s.assumptions:
+                w("")
+                w("Verification assumptions:")
+                for a in s.assumptions:
+                    w(f"- {a}")
             w("")
     w("## Recommendation")
     w("")

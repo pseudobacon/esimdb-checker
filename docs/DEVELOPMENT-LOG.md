@@ -5,6 +5,55 @@ the current-state snapshot is in [HANDOFF.md](HANDOFF.md).
 
 ---
 
+## 2026-11-22 — The ladder priced six rows but explained one: `--show-purchases`
+
+Same 32-day, four-country itinerary as the entry below it. The new table priced all six ways
+to buy the trip, but only the recommended row carried an install list — so "what does the
+2-eSIM row actually buy?" meant re-running the tool once per row and diffing the reports.
+
+`--show-purchases N[,N…]` or `all` (on both `recommend` and `recommend-wizard`) expands the
+named rows directly under the ladder, in ladder order:
+
+- The requested counts are resolved against the frontier before rendering. A count no
+  feasible option buys is exit 2 naming the counts that do — not a silent no-op, and not a
+  shorter list pretending to be complete.
+- `Report.ladder_strategies` holds the live `Strategy` per count for the renderers. It is
+  deliberately not serialized: `to_dict()` is unchanged, because the JSON already carries the
+  same data as `purchase_frontier[].plans` (including the per-purchase `activation_day`), and
+  `totals.show_purchases` records what the text output expanded.
+- The expanded block reuses the recommendation's install list through the shared
+  `_buy_lines()`. An alternative you are asked to weigh must be described in exactly the same
+  detail as the answer — plan, provider, install day, legs, price, data, validity — or the
+  comparison is rigged by formatting.
+
+**Then the loose ends from the handoff were closed.**
+
+- **Expanded rows now carry the same verification assumptions as the answer.** Activation
+  timing, validity span, and an accepted speed cap were printed only under RECOMMENDED, so a
+  capped alternative was disclosed as a ⚠ bit on its plan line and nothing more. The expanded
+  rows (console and Markdown) now print the same `verification assumptions:` block, so the
+  "accepted despite a speed cap" rationale is visible on the row that buys the capped plan.
+- **The wizard path is tested end-to-end.** `cmd_wizard` forwards the flag (it validates at
+  entry and `_run_engine` resolves against the real frontier), which the tests now prove: the
+  wizard scenario prices exactly one rung — two purchases of the same Europe plan, whole-trip
+  infeasible on data — so `--show-purchases 2` expands with the "buys the same plan more than
+  once" assumption stated, and `--show-purchases 1` exits 2 with no report printed. This was
+  the flag's most likely failure mode: accepted by the wizard, silently ignored.
+- **`all` was decided uncapped.** The capped diagnostics lists cap because they are a constant
+  tax on every report; `all` is an explicit request, the compact ladder table directly above
+  the blocks already shows how many rungs exist, and capping would reintroduce the per-row
+  re-run the flag exists to remove. Recorded in the README next to the flag.
+- **The JSON shape is documented** (README, "The JSON report"): `purchase_frontier` rows,
+  `plans[].activation_day` (`0` = the day before the trip starts), `totals.show_purchases`,
+  and `purchase_policy` (how the recommendation was chosen, including `budget_over_convenience`).
+
+`pytest` 202 passed in 86.00s (3 new offline tests: assumptions on an expanded row, an
+accepted cap disclosed on the row that buys it, the wizard forwarding the flag and refusing an
+infeasible count), `ruff check .` clean, offline. Console, Markdown and JSON checked against
+each other.
+
+---
+
 ## 2026-11-22 — The price of convenience: cheapest strategy for every number of eSIMs
 
 Same 32-day, four-country itinerary as the 2026-11-21 entry. That fix made the Simvito

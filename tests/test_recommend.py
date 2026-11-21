@@ -521,6 +521,39 @@ def test_show_purchases_markdown_expands_the_same_rows(tmp_path):
     assert "**What 1 eSIM would buy**" in md and "**What 2 eSIMs would buy**" in md
     bullets = md.split("**What 1 eSIM would buy**", 1)[1].split("**What 2 eSIMs")[0]
     assert bullets.count("\n- **") == 1
+    # Same honesty as the console: the row's assumptions are listed, not just the plan bits.
+    assert "Verification assumptions:" in bullets
+
+
+def test_expanded_row_carries_the_assumptions_it_runs_on(tmp_path):
+    """An alternative must state its own activation assumptions, exactly like the answer."""
+    trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)])
+    rep = _run(tmp_path, _frontier_payloads(), trip)
+    rep.totals["show_purchases"] = [2]
+    text = render_console(rep)
+    block = text.split("  What 2 eSIMs would buy", 1)[1].split("RECOMMENDED", 1)[0]
+    assert "verification assumptions:" in block
+    assert "activated on travel day 10, 1 day before arrival to Japan" in block
+
+
+def test_expanded_row_discloses_an_accepted_speed_cap(tmp_path):
+    """A capped plan inside an expanded row states the acceptance, not only the ⚠ bit."""
+    trip = _trip([(ES, 4, 0), (FR, 4, 0)], daily_data_gb=1.5)
+    capped = entry("eu-cap", A, "Europe Daily 3GB", 3000, 30, 4.0,
+                   data_cap_per="day", reduced_speed=128)
+    es = entry("es-daily", B, "Spain Daily 3GB", 3000, 30, 4.0, data_cap_per="day")
+    fr = entry("fr-daily", B, "France Daily 3GB", 3000, 30, 4.0, data_cap_per="day")
+    rep = _run(
+        tmp_path,
+        [("spain", build_plans_payload([capped, es])),
+         ("france", build_plans_payload([capped, fr]))],
+        trip,
+    )
+    rep.totals["show_purchases"] = [1]
+    text = render_console(rep)
+    block = text.split("  What 1 eSIM would buy", 1)[1].split("RECOMMENDED", 1)[0]
+    assert "accepted despite a speed cap" in block
+    assert "128 kbps after the allowance" in block
 
 
 def test_frontier_endpoints_are_the_named_families(tmp_path):
