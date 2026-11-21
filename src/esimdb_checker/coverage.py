@@ -51,7 +51,9 @@ def _word_re(tokens: Iterable[str]) -> re.Pattern:
     toks = sorted((t for t in tokens if t), key=len, reverse=True)
     if not toks:
         return re.compile("(?!a)a")  # never matches
-    return re.compile(r"(?<![a-z0-9])(" + "|".join(_flex(t.lower()) for t in toks) + r")(?![a-z0-9])")
+    return re.compile(
+        r"(?<![a-z0-9])(" + "|".join(_flex(t.lower()) for t in toks) + r")(?![a-z0-9])"
+    )
 
 
 _GLOBAL_RE = re.compile(r"\b(global|world|worldwide|all countries|everywhere|global e?sim)\b", re.I)
@@ -70,7 +72,9 @@ class CoverageResolver:
             if c.name:
                 country_tokens.add(c.name.lower())
         # Rebuild the alias -> code map locally (full names already cover most).
-        self._country_map: dict[str, str] = {c.name.lower(): c.code for c in geo.countries if c.name}
+        self._country_map: dict[str, str] = {
+            c.name.lower(): c.code for c in geo.countries if c.name
+        }
         self._country_re = _word_re(self._country_map)
         # Region tokens (exclude the global pseudo-region, handled separately).
         region_tokens = {}

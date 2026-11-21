@@ -18,16 +18,16 @@ day counts, data need, validity and budget. Research only — it never buys or a
 | Package | `esimdb-checker` 0.1.0, `src/` layout, Python 3.10+, console script `esimdb-checker` |
 | Runtime deps | `httpx`, `textual` — **no browser, no Playwright at runtime** |
 | Tests | **173 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
-| Lint | `ruff check .` **fails: ~175 findings** — 174 already present at the baseline commit. Style debt (`UP045` ~102, `E501` ~44), not behaviour failures. Not yet swept. |
+| Lint | `ruff check .` **clean, exit 0**. Pre-existing debt (174 findings at the baseline commit) swept in two passes — see DEVELOPMENT-LOG. |
 | Type check | none configured (`mypy` not installed, no config) |
 | CI | none |
-| Publishing | **not yet pushed to GitHub** — no credentials exist on this machine (see DEVELOPMENT-LOG) |
+| Publishing | Published at `https://github.com/pseudobacon/esimdb-checker` — **public** (chosen deliberately), default branch `main`, `origin` points there |
 
 ## Checks that were actually run (2026-11-11)
 
 ```
 python -m pytest tests/ -p no:cacheprovider   -> 173 passed in 88.55s
-python -m ruff check .                        -> FAILED, 175 findings (174 pre-existing at HEAD)
+python -m ruff check .                        -> All checks passed (exit 0)
 esimdb-checker recommend --itinerary …        -> console, --json, --md, --strict-speed-cap, --include-capped
 pty-driven wizard walkthrough                 -> see README "Verified in a terminal"
 ```
@@ -67,12 +67,15 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
 
 ## Known debt / open items
 
-- Sweep the ~175 ruff findings as a dedicated commit (keep it out of feature diffs).
+- Lint debt is swept. Re-run `ruff check .` before adding code; keep future sweeps out of
+  feature diffs.
 - `pyproject` declares a `live` extra (playwright) and a `live` pytest marker; **no live test
   exists**. Either write it or delete both. The comment now says so.
-- **Licence is unchosen.** `pyproject.toml` used to claim `MIT` with no LICENSE file anywhere;
-  the claim is now removed (see DEVELOPMENT-LOG, 2026-11-11). Choose a licence and add the field
-  *and* a LICENSE file together — do not re-add the field on its own.
+- **Licence is unchosen, and the repository is public.** `pyproject.toml` used to claim `MIT`
+  with no LICENSE file anywhere; the claim is now removed (see DEVELOPMENT-LOG, 2026-11-11).
+  With no licence, default copyright applies — anyone reading the public repo has no permission
+  to reuse the code. If that is not intended, choose a licence and add the field *and* a LICENSE
+  file together; do not re-add the field on its own.
 - `itinerary.py` currency list and the wizard's currency list should not be able to drift; they
   are shared today but only by import.
 - No CI, no packaging release flow, no screenshots/GIF in the README.

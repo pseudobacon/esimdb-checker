@@ -268,7 +268,7 @@ it).
 
 ```bash
 uv run pytest                 # 173 offline tests (mocked API + headless TUI), no network
-uv run ruff check src tests   # lint (see the note below)
+uv run ruff check .           # lint - clean, exit 0
 ```
 
 The suite runs offline: `respx` mocks the observed API with synthetic folded payloads,
@@ -282,9 +282,10 @@ drives the CLI wizard path — including the output modes — through a fake TTY
 pause briefly after each key because Textual batches a submitted answer with the repaint that
 follows it; that is why the suite takes ~90 s instead of a few seconds.
 
-**On lint:** `ruff check .` currently reports ~175 findings (mostly `Optional[X]` → `X | None`
-and long lines) that predate the current code and are not fixed yet; they are style debt, not
-failures of behaviour. The numbers are tracked in `docs/HANDOFF.md`.
+`ruff` (rules `E,F,W,I,UP,B`, line length 100) reports no findings. The sweep of pre-existing
+style debt is recorded in `docs/DEVELOPMENT-LOG.md`; it was verified behaviour-neutral by
+rendering the same itinerary with the pre- and post-sweep code and diffing the console, JSON
+and Markdown output (identical apart from the generation timestamp).
 
 ### Verified in a terminal
 

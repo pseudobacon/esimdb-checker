@@ -119,7 +119,8 @@ def _strategy_detail_lines(report: Report, s: Strategy, title: str) -> list[str]
         activate_txt = _activation_text(sp, report)
         lines.append(f"  {i}. {sp.plan.name} — {sp.plan.provider}")
         lines.append(f"       activate: {activate_txt}")
-        lines.append(f"       serves: {_legs_label(s, report) if len(s.plans) == 1 else _sp_legs(sp, report)}")
+        served = _legs_label(s, report) if len(s.plans) == 1 else _sp_legs(sp, report)
+        lines.append(f"       serves: {served}")
         price = _money(sp.cost, s.currency)
         lines.append(f"       price: {price}  ·  {_plan_bits(sp.plan)}")
     if s.assumptions:
@@ -158,22 +159,28 @@ def _recommendation_lines(report: Report) -> list[str]:
         f"RECOMMENDED: {rec.family}  (cheapest price-comparable feasible strategy)"
     ]
     for i, sp in enumerate(rec.plans, start=1):
-        lines.append(f"  buy {i}. {sp.plan.name} — {sp.provider if hasattr(sp, 'provider') else sp.plan.provider}")
+        provider = sp.provider if hasattr(sp, "provider") else sp.plan.provider
+        lines.append(f"  buy {i}. {sp.plan.name} — {provider}")
         lines.append(f"      activate {_activation_text(sp, report)}")
         lines.append(f"      serves: {_sp_legs(sp, report)}")
         lines.append(f"      price: {_money(sp.cost, rec.currency)}  ·  {_plan_bits(sp.plan)}")
     # why it wins: savings vs other families
-    others = {k: report.strategies.get(k) for k in ("local_only", "whole_trip", "hybrid") if k != rec.family}
+    others = {
+        k: report.strategies.get(k)
+        for k in ("local_only", "whole_trip", "hybrid") if k != rec.family
+    }
     for fam, s in others.items():
         if s is not None and rec.total_cost is not None and s.total_cost is not None:
             diff = s.total_cost - rec.total_cost
             if diff > 0:
                 lines.append(
-                    f"  saves {_money(diff, rec.currency)} vs {fam} ({_money(s.total_cost, rec.currency)})"
+                    f"  saves {_money(diff, rec.currency)} vs {fam} "
+                    f"({_money(s.total_cost, rec.currency)})"
                 )
             elif diff < 0:
                 lines.append(
-                    f"  adds {_money(-diff, rec.currency)} vs {fam} ({_money(s.total_cost, rec.currency)})"
+                    f"  adds {_money(-diff, rec.currency)} vs {fam} "
+                    f"({_money(s.total_cost, rec.currency)})"
                 )
     if rec.assumptions:
         lines.append("  verification assumptions:")
@@ -181,12 +188,19 @@ def _recommendation_lines(report: Report) -> list[str]:
             lines.append(f"    • {a}")
     # budget
     if bs.get("within_original"):
-        lines.append(f"  budget: within {_money(bs['budget'], bs['currency'])} (cost {_money(bs['cost'], bs['currency'])})")
+        lines.append(
+            f"  budget: within {_money(bs['budget'], bs['currency'])} "
+            f"(cost {_money(bs['cost'], bs['currency'])})"
+        )
     else:
-        lines.append(f"  budget: EXCEEDED — original {_money(bs['budget'], bs['currency'])}, cost {_money(bs['cost'], bs['currency'])}")
+        lines.append(
+            f"  budget: EXCEEDED — original {_money(bs['budget'], bs['currency'])}, "
+            f"cost {_money(bs['cost'], bs['currency'])}"
+        )
         if bs.get("relaxed"):
             lines.append(
-                f"      relaxed to threshold {_money(bs['threshold'], bs['currency'])} after {bs['steps']} step(s); "
+                f"      relaxed to threshold {_money(bs['threshold'], bs['currency'])} "
+                f"after {bs['steps']} step(s); "
                 f"overspend {_money(bs['overspend'], bs['currency'])}"
             )
     return lines
@@ -218,7 +232,8 @@ def _diagnostics_lines(report: Report) -> list[str]:
         lines.append(f"  filtered before ranking (data below this trip's need): "
                      f"{data_filtered}")
     throttled = d.get("excluded_always_throttled", [])
-    total = d.get("excluded_always_throttled_total", len(throttled))   # the true count, not the list
+    # The *_total key is the real count; the detail list is capped and must never be read as one.
+    total = d.get("excluded_always_throttled_total", len(throttled))
     if total:
         lines.append(f"  throttled from first use, excluded: {total}")
     for e in throttled[:8]:
@@ -240,7 +255,10 @@ def _diagnostics_lines(report: Report) -> list[str]:
     near = d.get("near_matches", [])
     lines.append(f"  near-matches (fail validity, shown for reference — NOT valid): {len(near)}")
     for n in near[:8]:
-        lines.append(f"    ? {n['leg']}: {n['plan']} — {n['provider']} ({_money(n['price'], n['currency'])}): {n['reason']}")
+        lines.append(
+            f"    ? {n['leg']}: {n['plan']} — {n['provider']} "
+            f"({_money(n['price'], n['currency'])}): {n['reason']}"
+        )
     unserv = d.get("unservable_legs", [])
     if unserv:
         lines.append(f"  unservable legs (no plan can meet data/validity): {', '.join(unserv)}")
@@ -257,7 +275,10 @@ def _speed_lines(report: Report) -> list[str]:
     s = report.speed_filter_status
     lines = ["Speed-cap requirement status:"]
     lines.append(f"  requirement: {s.get('requirement')}")
-    lines.append(f"  mode: {s.get('mode')}" + ("  [VERIFIED]" if s.get("verified") else "  [NOT verified against the site toggle]"))
+    lines.append(
+        f"  mode: {s.get('mode')}"
+        + ("  [VERIFIED]" if s.get("verified") else "  [NOT verified against the site toggle]")
+    )
     lines.append(f"  note: {s.get('note')}")
     return lines
 
@@ -316,7 +337,8 @@ def render_markdown(report: Report) -> str:
     w("| Destination | Days | Travel days | Required data |")
     w("|-------------|------|-------------|---------------|")
     for leg in it.legs:
-        w(f"| {leg.country_name} | {leg.days} | {leg.travel_days_label()} | {_gb(leg.required_gb)} GB |")
+        w(f"| {leg.country_name} | {leg.days} | {leg.travel_days_label()} "
+          f"| {_gb(leg.required_gb)} GB |")
     w(f"| **Total** | **{it.total_days}** | **1–{it.total_days}** | **{_gb(it.required_gb)} GB** |")
     w("")
     w("## Strategy comparison")
@@ -328,7 +350,10 @@ def render_markdown(report: Report) -> str:
         if s is None:
             w(f"| {fam} | — | — | — | — | infeasible |")
         else:
-            w(f"| {fam} | {_money(s.total_cost, s.currency)} | {s.purchase_count} | ok | {'ok' if s.validity_ok else 'unverified'} | yes |")
+            w(
+                f"| {fam} | {_money(s.total_cost, s.currency)} | {s.purchase_count} | ok | "
+                f"{'ok' if s.validity_ok else 'unverified'} | yes |"
+            )
     w("")
     w("## Recommendation")
     w("")
@@ -337,7 +362,10 @@ def render_markdown(report: Report) -> str:
         w("No feasible strategy was found.")
         w("")
     else:
-        w(f"**{rec.family}** — total {_money(rec.total_cost, rec.currency)}, {rec.purchase_count} purchase(s)")
+        w(
+            f"**{rec.family}** — total {_money(rec.total_cost, rec.currency)}, "
+            f"{rec.purchase_count} purchase(s)"
+        )
         w("")
         for i, sp in enumerate(rec.plans, start=1):
             w(f"{i}. **{sp.plan.name}** — {sp.plan.provider}")
@@ -379,14 +407,19 @@ def render_markdown(report: Report) -> str:
     w("")
     s = report.speed_filter_status
     w(f"- requirement: {s.get('requirement')}")
-    w(f"- mode: {s.get('mode')}" + (" (VERIFIED)" if s.get("verified") else " (NOT verified against the site toggle)"))
+    w(f"- mode: {s.get('mode')}"
+      + (" (VERIFIED)" if s.get("verified") else " (NOT verified against the site toggle)"))
     w(f"- note: {s.get('note')}")
     w("")
     w("## Provenance & notes")
     w("")
     for n in report.notes:
         w(f"- {n}")
-    w(f"- FX: {report.fx.get('base')} -> {report.fx.get('currency')} rate {report.fx.get('rate')} ({report.fx.get('source')}, date {report.fx.get('date')})")
+    w(
+        f"- FX: {report.fx.get('base')} -> {report.fx.get('currency')} "
+        f"rate {report.fx.get('rate')} "
+        f"({report.fx.get('source')}, date {report.fx.get('date')})"
+    )
     w("")
     w("### Snapshots")
     w("")
@@ -402,7 +435,9 @@ def write_report(report: Report, out_path: Path | None, fmt: str = "console") ->
         out_path = Path("report." + ext)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if fmt == "json":
-        out_path.write_text(json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+        out_path.write_text(
+            json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
+        )
     elif fmt == "markdown":
         out_path.write_text(render_markdown(report), encoding="utf-8")
     else:

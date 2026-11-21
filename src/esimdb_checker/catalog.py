@@ -82,7 +82,11 @@ def parse_folded(payload: dict[str, Any], source_slug: str) -> list[Plan]:
         if not isinstance(row, list) or len(row) < 7:
             continue
         fam_idx = _as_int(row[0], -1)
-        fam = families[fam_idx] if 0 <= fam_idx < len(families) and isinstance(families[fam_idx], dict) else {}
+        fam = (
+            families[fam_idx]
+            if 0 <= fam_idx < len(families) and isinstance(families[fam_idx], dict)
+            else {}
+        )
         plan_id = row[1]
         # The payload carries HTML-escaped text ("Asia &amp; Europe 52 Countries");
         # unescape once here so every renderer, matcher and report sees clean text.

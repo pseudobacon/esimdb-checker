@@ -32,7 +32,9 @@ def feed(answers):
     return ask
 
 
-def make_country(code: str, name: str, slug: str, region: str = "europe", popularity: int = 100) -> dict:
+def make_country(
+    code: str, name: str, slug: str, region: str = "europe", popularity: int = 100
+) -> dict:
     return {
         "code": code,
         "name": name,

@@ -53,7 +53,7 @@ class Plan:
     provider: str
     provider_slug: str | None
     prices: dict[str, float]          # currency code -> price (USD always present)
-    capacity_mb: int                   # 0 = unlimited pool; per-day amount when data_cap_per == "day"
+    capacity_mb: int                   # 0 = unlimited; per-day amount if data_cap_per == "day"
     period_days: int                   # 0 = unknown validity
     data_cap_per: str | None = None # "day" (daily-refill) | None
     speed_limit: float | None = None   # kbps (None = not speed-capped)
@@ -126,7 +126,8 @@ class Plan:
             return float(self.prices[currency]), True
         if currency == "USD":
             return self.usd_price, self.usd_price is not None
-        if self.usd_price is not None and fx is not None and fx.available and fx.currency == currency and fx.rate is not None:
+        if (self.usd_price is not None and fx is not None and fx.available
+                and fx.currency == currency and fx.rate is not None):
             return self.usd_price * fx.rate, True
         return None, False
 

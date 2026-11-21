@@ -71,7 +71,11 @@ def test_whole_trip_beats_local(tmp_path):
     eu = entry("eu-15", A, "Europe 15GB/30Days", 15000, 30, 20.0)
     sp = entry("sp-local", B, "Spain 2GB/30Days", 2000, 30, 5.0)
     fr = entry("fr-local", B, "France 2GB/30Days", 2000, 30, 5.0)
-    rep = _run(tmp_path, [("spain", build_plans_payload([eu, sp])), ("france", build_plans_payload([eu, fr]))], trip)
+    rep = _run(
+        tmp_path,
+        [("spain", build_plans_payload([eu, sp])), ("france", build_plans_payload([eu, fr]))],
+        trip,
+    )
     assert rep.recommended is not None
     assert rep.recommended.family == "whole_trip"
     assert rep.recommended.plans[0].plan.id == "eu-15"
@@ -170,7 +174,9 @@ def test_provider_filter(tmp_path):
     trip = _trip([(ES, 5, 0)], daily_data_gb=1.0)
     a_plan = entry("es-a", A, "Spain 15GB/30Days (Alpha)", 15000, 30, 20.0)
     b_plan = entry("es-b", B, "Spain 15GB/30Days (Beta)", 15000, 30, 15.0)
-    rep = _run(tmp_path, [("spain", build_plans_payload([a_plan, b_plan]))], trip, provider="AlphaSim")
+    rep = _run(
+        tmp_path, [("spain", build_plans_payload([a_plan, b_plan]))], trip, provider="AlphaSim"
+    )
     assert rep.recommended is not None
     # Provider filter restricts candidates to AlphaSim (the pricier one here).
     assert rep.recommended.plans[0].plan.provider == "AlphaSim"

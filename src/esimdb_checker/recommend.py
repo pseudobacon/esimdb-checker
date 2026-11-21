@@ -155,7 +155,9 @@ class RecommendationEngine:
                 unverified = True
         return hard_ok, unverified
 
-    def _assumptions_for(self, plan: Plan, legs: list[Leg], activation_day: int, trip: Trip) -> list[str]:
+    def _assumptions_for(
+        self, plan: Plan, legs: list[Leg], activation_day: int, trip: Trip
+    ) -> list[str]:
         out: list[str] = []
         # A plan is activated once, at the earliest of the legs it serves (not
         # separately per leg). Only note it when that day is not the trip start.
@@ -163,13 +165,15 @@ class RecommendationEngine:
             first = min(legs, key=lambda leg: leg.start_day)
             out.append(
                 f"assumes '{plan.name}' is activated at travel day {activation_day} "
-                f"(arrival to {first.country.name}); activation terms: {plan.activation_type or 'unspecified'}"
+                f"(arrival to {first.country.name}); "
+                f"activation terms: {plan.activation_type or 'unspecified'}"
             )
         if plan.period_days <= 0:
             lo = min(leg.start_day for leg in legs)
             hi = max(leg.end_day for leg in legs)
             out.append(
-                f"assumes '{plan.name}' validity spans travel days {lo}\u2013{hi} (listed period unknown)"
+                f"assumes '{plan.name}' validity spans travel days "
+                f"{lo}\u2013{hi} (listed period unknown)"
             )
         phrase = filters.after_cap_phrase(plan)
         if phrase:
@@ -184,7 +188,8 @@ class RecommendationEngine:
     def _best_local_plan(self, leg: Leg, trip: Trip) -> tuple[Plan, float, list[str], bool] | None:
         cands: list[tuple[float, bool, Plan]] = []
         for plan in self.plans_by_slug.get(leg.country.slug, []):
-            if not self._speed_ok(plan) or not self._provider_ok(plan) or not self._purchasable(plan):
+            if (not self._speed_ok(plan) or not self._provider_ok(plan)
+                    or not self._purchasable(plan)):
                 continue
             if not self._data_feasible(plan, [leg], trip.daily_data_gb):
                 continue
@@ -211,7 +216,8 @@ class RecommendationEngine:
         # ones that can't meet any leg's data need.
         best: dict[frozenset, tuple[float, Plan, list[int]]] = {}
         for _pid, plan in self.plan_by_id.items():
-            if not self._speed_ok(plan) or not self._provider_ok(plan) or not self._purchasable(plan):
+            if (not self._speed_ok(plan) or not self._provider_ok(plan)
+                    or not self._purchasable(plan)):
                 continue
             covered = [i for i, _ in self.legs if self._covers_leg(plan, self.leg_by_idx[i])]
             if len({self.leg_by_idx[i].country.key for i in covered}) < 2:
@@ -249,7 +255,9 @@ class RecommendationEngine:
 
     # ---- strategy construction -------------------------------------------
     @staticmethod
-    def _make_strategy(family: str, plans: list[StrategyPlan], total: float, trip: Trip, assumptions: list[str]) -> Strategy:
+    def _make_strategy(
+        family: str, plans: list[StrategyPlan], total: float, trip: Trip, assumptions: list[str]
+    ) -> Strategy:
         validity_ok = all(p.plan.period_days > 0 for p in plans)
         return Strategy(
             family=family,
@@ -289,7 +297,9 @@ class RecommendationEngine:
                 )
                 assumptions += assump
                 total += cost
-            strategies["local_only"] = self._make_strategy("local_only", plans, total, trip, assumptions)
+            strategies["local_only"] = self._make_strategy(
+                "local_only", plans, total, trip, assumptions
+            )
 
         # whole-trip + hybrid from regional candidates
         for cost, plan, covered in self._regional_candidates(trip):
@@ -348,7 +358,10 @@ class RecommendationEngine:
                 "steps": 0,
                 "threshold": None,
                 "overspend": None,
-                "message": "No budget specified." if cost is not None else "No budget specified and no feasible strategy.",
+                "message": (
+                    "No budget specified." if cost is not None
+                    else "No budget specified and no feasible strategy."
+                ),
             }
         if cost is None:
             return {
@@ -399,7 +412,9 @@ class RecommendationEngine:
         }
 
     # ---- diagnostics -------------------------------------------------------
-    def _diagnostics(self, trip: Trip, strategies: dict[str, Strategy | None], local_picks: dict[int, Any | None]) -> dict[str, Any]:
+    def _diagnostics(
+        self, trip: Trip, strategies: dict[str, Strategy | None], local_picks: dict[int, Any | None]
+    ) -> dict[str, Any]:
         """Bucket each covering plan under the reason that actually rules it out.
 
         A plan is counted once, in the order the checks that would keep it out even if
@@ -521,18 +536,26 @@ class RecommendationEngine:
             "fetch_failed_slugs": fetch_failed,
         }
 
-    def _no_solution_reason(self, trip: Trip, strategies: dict[str, Strategy | None], diag: dict[str, Any]) -> str | None:
+    def _no_solution_reason(
+        self, trip: Trip, strategies: dict[str, Strategy | None], diag: dict[str, Any]
+    ) -> str | None:
         if any(strategies[k] is not None for k in FAMILY_ORDER):
             return None
         if diag["fetch_failed_slugs"]:
-            return "plan acquisition failed or was incomplete for: " + ", ".join(diag["fetch_failed_slugs"])
+            return (
+                "plan acquisition failed or was incomplete for: "
+                + ", ".join(diag["fetch_failed_slugs"])
+            )
         if diag["unservable_legs"]:
             return (
                 "no plan in the acquired data can serve leg(s) "
                 + ", ".join(diag["unservable_legs"])
                 + " at the required data/validity — no compliant strategy at any price"
             )
-        return "no price-comparable feasible strategy in the acquired data (check currency/FX availability)"
+        return (
+            "no price-comparable feasible strategy in the acquired data "
+            "(check currency/FX availability)"
+        )
 
     # ---- main -------------------------------------------------------------
     def recommend(self, trip: Trip) -> Report:
@@ -545,7 +568,10 @@ class RecommendationEngine:
         feasible = [s for s in strategies.values() if s is not None and s.comparable]
         recommended: Strategy | None = None
         if feasible:
-            recommended = min(feasible, key=lambda s: (s.total_cost, s.purchase_count, FAMILY_ORDER.index(s.family)))
+            recommended = min(
+                feasible,
+                key=lambda s: (s.total_cost, s.purchase_count, FAMILY_ORDER.index(s.family)),
+            )
 
         budget_status = self._budget_status(recommended, trip)
 
@@ -571,7 +597,10 @@ class RecommendationEngine:
             "plans_covering_all_legs": sum(
                 1
                 for pid in self.plan_by_id
-                if all(self.leg_by_idx[i].country.slug in self.plan_slugs.get(pid, set()) for i, _ in self.legs)
+                if all(
+                    self.leg_by_idx[i].country.slug in self.plan_slugs.get(pid, set())
+                    for i, _ in self.legs
+                )
             ),
             "always_throttled_excluded": diag["excluded_always_throttled_total"],
             "after_cap_admitted": diag["after_cap_admitted"],
@@ -583,10 +612,12 @@ class RecommendationEngine:
 
         notes = [
             "Read-only research tool: no purchases, logins, or activations.",
-            "Data source: esimdb.com observed client JSON API (not a documented/stable public API).",
+            "Data source: esimdb.com observed client JSON API "
+            "(not a documented/stable public API).",
             "Coverage verified by a plan being listed on every leg's destination page.",
             "Prices are as listed at capture time and may change; confirm before purchase.",
-            f"Requested currency: {trip.currency}; ranking, budget, and totals all use this currency.",
+            f"Requested currency: {trip.currency}; ranking, budget, and totals "
+            "all use this currency.",
         ]
         if no_solution:
             notes.insert(0, f"No feasible strategy: {no_solution}.")
@@ -642,12 +673,13 @@ class RecommendationEngine:
         )
         if self.strict_speed_cap:
             note += (
-                "  --strict-speed-cap was explicitly set: after-allowance throttles are excluded too."
+                "  --strict-speed-cap was explicitly set: after-allowance throttles "
+                "are excluded too."
             )
         if self.include_capped:
             note += (
-                "  --include-capped was explicitly set: speed-capped plans are INCLUDED, so this run "
-                "does NOT satisfy the strict uncapped requirement."
+                "  --include-capped was explicitly set: speed-capped plans are INCLUDED, "
+                "so this run does NOT satisfy the strict uncapped requirement."
             )
         return {
             "requirement": "uncapped eSIMs (esimdb built-in 'Hide plans with speed caps')",

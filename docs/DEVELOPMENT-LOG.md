@@ -5,6 +5,48 @@ the current-state snapshot is in [HANDOFF.md](HANDOFF.md).
 
 ---
 
+## 2026-11-11 — Lint sweep completed
+
+`ruff check .` (rules `E,F,W,I,UP,B`, line length 100) had been failing with **174 findings at
+the baseline commit**. It now reports no findings. Done in two passes:
+
+1. **Mechanical** — `ruff check --fix`: 144 fixes, almost all `Optional[X]` → `X | None` under
+   `from __future__ import annotations`, plus import order and unused imports.
+2. **Judgement** — 8 findings autofix refuses to touch, checked individually rather than
+   blind-fixed:
+   - `F841 low = text.lower()` in `filters.speed_cap_reasons` — genuinely dead: every text
+     pattern is compiled with `re.I` and searches `text`, so the lowered copy was never needed.
+     Removed, not renamed.
+   - 4 × `E741` ambiguous `l` → `leg` in `recommend.py`.
+   - 3 × `B007` unused loop variables → `_pid` / `_i` / `_plan` (kept positional structure).
+3. **Line length** — the remaining 43 `E501` lines wrapped by hand: signatures split over lines,
+   long f-strings split into implicitly-concatenated literals, three ternaries parenthesised, one
+   trailing comment moved above its statement. Two long inline expressions were pulled into named
+   locals (`served = ...` in the strategy list, `provider = sp.provider if hasattr(...) else ...`
+   in the buy list) rather than wrapped mid-expression.
+
+**Why the wrapping is safe.** Re-rendered the same 5-country itinerary with the pre-sweep code
+(a `git worktree` checkout of `HEAD`, forced onto `sys.path` with `PYTHONPATH`) and with the
+post-sweep code, both against the same snapshot cache so no network was involved:
+
+```
+JSON     25168 B  identical
+console   6849 B  identical apart from the generation timestamp
+Markdown  6259 B  identical apart from the generation timestamp
+```
+
+An automated scan of every implicitly-concatenated literal pair also flagged no doubled or lost
+space at a join.
+
+`pytest`: 173 passed after the mechanical pass, and 173 passed again with the full sweep in
+place; `ruff check .` exits 0.
+
+**Not done here:** `--fix --unsafe-fixes` was never run; the two findings it would have made
+(mostly removal of seemingly-unused code) were left for a human. Also note this entry was
+committed *after* the repository had already been created and pushed — see the next entry.
+
+---
+
 ## 2026-11-11 — Publication preparation
 
 ### State reviewed before touching anything
@@ -72,10 +114,10 @@ publication diff stays reviewable; the sweep belongs in its own commit.
 Renamed `master` → `main` (only branch, no remote, no other refs to disturb) so the fresh
 repository starts on `main`.
 
-### NOT done: publishing
+### Publishing: blocked at the time, then unblocked by the user
 
-**The repository has not been created and nothing has been pushed.** This machine has no
-GitHub credentials of any kind:
+**At the time this entry was written, the repository had not been created and nothing had been
+pushed.** This machine had no GitHub credentials of any kind:
 
 ```
 gh                     command not found
