@@ -17,7 +17,7 @@ day counts, data need, validity and budget. Research only — it never buys or a
 | --- | --- |
 | Package | `esimdb-checker` 0.1.0, `src/` layout, Python 3.10+, console script `esimdb-checker` |
 | Runtime deps | `httpx`, `textual` — **no browser, no Playwright at runtime** |
-| Tests | **202 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
+| Tests | **210 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
 | Lint | `ruff check .` **clean, exit 0**. Pre-existing debt (174 findings at the baseline commit) swept in two passes — see DEVELOPMENT-LOG. |
 | Type check | none configured (`mypy` not installed, no config) |
 | CI | none |
@@ -52,6 +52,13 @@ esimdb-checker recommend … --show-purchases 7 -> exit 2: "no feasible option b
      purchase counts that do exist are [1, 2, 3, 4, 5, 6]"
 esimdb-checker recommend … --show-purchases two -> exit 2: "takes 'all' or purchase counts"
 esimdb-checker recommend … --show-purchases 2,3 --md -> "**What 2 eSIMs would buy**" bullets
+# 34-day scenario with six flying days charged at half (exact, no brackets):
+esimdb-checker recommend --stop 'Taiwan 2 +1' --stop 'Indonesia 14 +1' --stop 'Thailand 5 +1' \
+  --stop 'China 4 +1' --stop 'Taiwan 3 +1' --stop 'China 0 +1' \
+  --daily-data 1 --currency GBP --transfer-data 0.5 --show-purchases all
+     -> 28 charged days over 34 travel days, 31 GB (28 full + six half); ladder
+        1 £24.90 / 2 £13.73 / 3 £12.22 / 4 £11.64 / 5 £10.99 <- recommended
+     -> flying-day assumptions list days 1, 4, 19, 25, 30, 34 per serving plan
 esimdb-checker recommend --itinerary …        -> console, --json, --md, --strict-speed-cap, --include-capped
 pty-driven wizard walkthrough                 -> see README "Verified in a terminal"
 ```
@@ -172,6 +179,14 @@ was printed — check the exit code, not the last line).
     live strategies and stays out of `to_dict()` because `purchase_frontier` already publishes that
     information. `all` is deliberately uncapped (explicit request; the ladder table shows the rung
     count). See DEVELOPMENT-LOG 2026-11-22 and the "completed" section above.
+12. **A flying day is a whole calendar day with partial use — and its data must have an owner.**
+    `--transfer-data F` charges each transfer day F× the daily need: a leg's pre-days ride on that
+    leg, a tail 0-day leg rides on the previous leg, which must then stay valid through the layover.
+    With F > 0 the engine rejects any plan/leg-set not active on a charged pre-day (exactly what
+    `--activate-lead-days 0` breaks) or not valid through a charged tail day. Fractional day slots
+    (`Taiwan 3.7`) were rejected: they would break the integer day model activation and validity are
+    built on. Default 0 keeps every existing report identical; the fraction is saved in itinerary
+    files and round-trips. See DEVELOPMENT-LOG 2026-11-22 ("Flying days are half-days").
 
 ## Known debt / open items
 

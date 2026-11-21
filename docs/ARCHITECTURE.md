@@ -190,11 +190,17 @@ trip was 12,562, and `totals.speed_cap_excluded` repeated the same truncated num
   `price_and_currency()`, `unlimited`, `capacity_label()`, `period_label()`,
   `data_cap_label()`, `price_per_gb_usd()`, `effective_total_mb(days)`.
 - **Leg** — one itinerary segment: `country` (None for a transfer leg), `days` (0 for a
-  transfer leg), `transfer_days` (days before this leg, not charged), `start_day`,
-  `end_day`, `required_gb` (`days × daily_data_gb`), `country_name`, `is_transfer`.
+  transfer leg), `transfer_days` (days before this leg; uncharged unless `Trip.transfer_data`
+  > 0), `start_day`, `end_day`, `required_gb` (`days × daily_data_gb`, plus charged flying
+  days), `country_name`, `is_transfer`.
 - **Trip** — the per-destination itinerary: `legs` (ordered), `total_days` (charged days),
-  `required_gb`, `daily_data_gb`, `currency`, `budget` (None = no budget), `start_date`,
-  `end_date`; `.distinct_countries` is the ordered unique destination set.
+  `required_gb`, `daily_data_gb`, `transfer_data` (fraction 0..1 of the daily need a
+  transfer/flying day uses; 0 = no data on transfer days), `currency`, `budget`
+  (None = no budget), `start_date`, `end_date`; `.distinct_countries` is the ordered unique
+  destination set. With `transfer_data > 0`, a leg's pre-days are charged into its own
+  `required_gb`; a 0-day leg's share is charged to the next destination leg (whose plan
+  activates on those days) or, at the trip's tail, to the previous leg, which must then
+  stay valid through the layover.
   `total_days` sums **charged** days only; `.span_days` is the calendar length
   (charged + transfer days) and is what the report prints as the travel-day range,
   because a plan's validity has to survive the calendar rather than the charge.
@@ -296,13 +302,15 @@ Feasibility rules:
 - **Purchasable:** at least one positive price in any currency.
 - **Provider filter:** `--provider` restricts candidates to that provider (by name).
 - **Data feasibility:** a plan serving a set of legs must cover their total data need
-  (`Σ legs.days × daily_data_gb`). A finite plan must have `effective_total_mb ≥ need`;
-  a daily-cap plan's usable total is `capacity_mb × period_days`; unlimited always
-  passes.
+  (`Σ legs.required_gb`, which includes charged flying days when `transfer_data > 0`).
+  A finite plan must have `effective_total_mb ≥ need`; a daily-cap plan's usable total is
+  `capacity_mb × period_days`; unlimited always passes.
 - **Validity:** a plan serving a set of legs, activated at the earliest leg's start, must
-  not expire before the last of those legs ends. Unknown validity (`period_days == 0`)
-  is flagged, never blocked. A data-feasible plan that is too short is surfaced as a
-  near-match, not silently dropped.
+  not expire before the last of those legs ends — and, with charged flying days, must be
+  active from the first charged pre-day and valid through the last charged tail day (a plan
+  that is not yet switched on cannot pay for a flying day). Unknown validity
+  (`period_days == 0`) is flagged, never blocked. A data-feasible plan that is too short is
+  surfaced as a near-match, not silently dropped.
 - **Dedup (cheapest per servable leg set):** for multi-leg plans, the leg set a plan is
   *listed on* is not the leg set it can *serve*. Feasibility is judged per leg set the
   plan would actually buy for, and that leg set is the dedupe key, so a plan that fails

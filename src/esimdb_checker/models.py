@@ -207,8 +207,8 @@ class Leg:
     days: int          # charged destination days (>= 0; 0 = transfer leg)
     start_day: int     # 1-based travel-day index, inclusive (start > end for 0-day legs)
     end_day: int       # inclusive
-    required_gb: float  # days * daily_data_gb (0 for transfer legs)
-    transfer_days: int = 0  # informational uncharged transit/connectivity days
+    required_gb: float  # days * daily_rate, plus charged transfer days (see build_trip)
+    transfer_days: int = 0  # uncharged transit/connectivity days before this leg
 
     @property
     def is_transfer(self) -> bool:
@@ -247,6 +247,7 @@ class Trip:
     daily_data_gb: float
     currency: str
     budget: float | None = None  # total budget in `currency`, or None (unbounded)
+    transfer_data: float = 0.0   # fraction of the daily need a transfer/flying day uses (0..1)
 
     @property
     def total_days(self) -> int:
@@ -265,7 +266,9 @@ class Trip:
 
     @property
     def required_gb(self) -> float:
-        return self.total_days * self.daily_data_gb
+        # Sum of the legs, not total_days * rate: with transfer_data > 0 the legs also
+        # carry their charged flying days, and a 0-day leg's share rides on a neighbour.
+        return sum(leg.required_gb for leg in self.legs)
 
     @property
     def names(self) -> list[str]:
@@ -302,6 +305,7 @@ class Trip:
                 for leg in self.legs
             ],
             "daily_data_gb": _gb(self.daily_data_gb),
+            "transfer_data": _gb(self.transfer_data),
             "currency": self.currency,
             "budget": _gb(self.budget) if self.budget is not None else None,
             "total_days": self.total_days,

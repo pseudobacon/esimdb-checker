@@ -5,6 +5,46 @@ the current-state snapshot is in [HANDOFF.md](HANDOFF.md).
 
 ---
 
+## 2026-11-22 — Flying days are half-days: `--transfer-data`
+
+Same trip as the runs above. The model knew two kinds of day — a charged day (full daily need)
+and a transfer day (zero) — so a flight day, which still uses some data, was either over-priced
+or unpriced. The ask: flying days should charge half, and a plan that pays for a flying day must
+actually be switched on and valid on it.
+
+`--transfer-data F` (0..1, default 0, shared by `recommend` and `recommend-wizard`, and saved in
+itinerary files) makes each transfer day cost F× the daily need:
+
+- **Charging.** A leg's own pre-days ride on that leg (`required_gb = (days + T×F) × rate`);
+  a 0-day leg — the layover shape `--stop 'China 0 +1'` — charges its share to the next
+  destination leg, whose plan activates on those days, or to the previous one when it is the
+  trip's tail, which must then stay valid through the layover. Every charged gigabyte has a
+  responsible plan; nothing is left unowned.
+- **Coverage.** With F > 0 the engine checks, per plan/leg-set: the plan must be active from
+  the first charged pre-day (which is exactly what `--activate-lead-days 0` violates — such
+  options are rejected instead of quietly under-covered) and valid through the last charged
+  tail day (this is what kills a 30-day plan ending the day before a charged layover). F = 0
+  keeps every existing report byte-identical.
+- **Disclosure.** The header gains "flying days: 0.5x the daily data need", the per-leg table
+  shows the charge, a provenance note explains it, and each affected plan states the flying
+  days it also covers in its verification assumptions.
+- **Rejected alternative:** fractional day slots (`Taiwan 3.7`). A flying day is a whole
+  calendar day with partial use; fractional indices would break the integer day model that
+  activation and validity checks are built on.
+
+The 34-day scenario now runs as one precise command instead of a bracket:
+`'Taiwan 2 +1' 'Indonesia 14 +1' 'Thailand 5 +1' 'China 4 +1' 'Taiwan 3 +1' 'China 0 +1'`
+with `--transfer-data 0.5` = exactly 30 GB. The 2× Tripuck Asia 20 GB/30d answer (£13.98) is
+confirmed under the exact numbers: first copy needs 17.5 GB of 19.5, second 13.5 of 19.5, and
+the second's validity reaches day 34 for the layover.
+
+`pytest` 210 passed (8 new offline tests: charging into requirements, a plan dying on a charged
+tail day, the pool being charged not just the header, the pre-day/lead-0 interaction, CLI
+plumbing and out-of-range rejection, file round-trip with override, wizard plumbing),
+`ruff check .` clean, offline. F = 0 verified unchanged across the whole pre-existing suite.
+
+---
+
 ## 2026-11-22 — The ladder priced six rows but explained one: `--show-purchases`
 
 Same 32-day, four-country itinerary as the entry below it. The new table priced all six ways

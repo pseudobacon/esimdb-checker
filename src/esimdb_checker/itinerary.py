@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -108,13 +109,21 @@ def build_trip(
     daily_data_gb: float,
     currency: str,
     budget: float | None = None,
+    transfer_data: float = 0.0,
 ) -> Trip:
     """Build a Trip from ordered (country_or_None, days, transfer_days) stops.
 
     Assigns each leg its start/end travel-day indices sequentially and computes
-    required_gb = days * daily_data_gb (exact via Decimal). 0-day legs (transfer)
-    consume no travel-day slot and require no data.
+    required_gb = days * daily_data_gb (exact via Decimal). With transfer_data > 0,
+    a leg's transfer (flying) days each use that fraction of the daily need and are
+    charged into the leg's requirement; a 0-day leg's share is charged to the next
+    destination leg (whose plan activates on those days), or to the previous one if
+    it is the trip's tail. 0-day legs themselves always require 0 GB directly.
     """
+    if not 0.0 <= transfer_data <= 1.0:
+        raise StopError(f"transfer_data must be a fraction between 0 and 1 (got {transfer_data})")
+    rate = Decimal(str(daily_data_gb))
+    frac = Decimal(str(transfer_data))
     legs: list[Leg] = []
     cursor = 1
     for country, days, transfer in stops:
@@ -123,15 +132,31 @@ def build_trip(
         cursor += transfer  # transfer days before this leg consume calendar slots
         start = cursor
         end = cursor + days - 1 if days > 0 else cursor - 1  # 0-day -> empty interval
-        required = float(Decimal(str(days)) * Decimal(str(daily_data_gb)))
+        if days > 0:
+            required = float((Decimal(days) + transfer * frac) * rate)
+        else:
+            required = 0.0
         legs.append(Leg(country=country, days=days, start_day=start, end_day=end,
                         required_gb=required, transfer_days=transfer))
         if days > 0:
             cursor = end + 1
     if not legs:
         raise StopError("an itinerary needs at least one stop")
+    for i, leg in enumerate(legs):
+        if leg.days > 0 or not leg.transfer_days or not frac:
+            continue
+        charge = float(leg.transfer_days * frac * rate)
+        target = next((j for j in range(i + 1, len(legs)) if legs[j].days > 0), None)
+        if target is None:  # tail: the previous leg's plan must stay valid through them
+            target = next((j for j in range(i - 1, -1, -1) if legs[j].days > 0), None)
+        if target is None:
+            raise StopError(
+                "a transfer leg with flying-day data needs a destination leg to charge it to"
+            )
+        t = legs[target]
+        legs[target] = replace(t, required_gb=t.required_gb + charge)
     return Trip(legs=tuple(legs), daily_data_gb=daily_data_gb,
-                currency=currency.upper(), budget=budget)
+                currency=currency.upper(), budget=budget, transfer_data=float(transfer_data))
 
 
 # ---- itinerary file I/O ---------------------------------------------------
@@ -174,6 +199,11 @@ def load_itinerary_file(path: Path) -> tuple[list[tuple[str | None, int, int]], 
         settings["daily_data_gb"] = float(d)
     else:
         raise StopError("itinerary file is missing 'daily_data_gb'")
+    td = obj.get("transfer_data", 0)
+    td_dec = _as_decimal(td, "transfer_data")
+    if td_dec is None or not (Decimal(0) <= td_dec <= Decimal(1)):
+        raise StopError("'transfer_data' must be a fraction between 0 and 1")
+    settings["transfer_data"] = float(td_dec)
     budget = obj.get("budget")
     budget_currency_raw: Any | None = None
     if isinstance(budget, dict):
@@ -208,11 +238,12 @@ def load_itinerary_trip(
     daily_data_gb: float | None = None,
     currency: str | None = None,
     budget: float | None = None,
+    transfer_data: float | None = None,
 ) -> Trip:
     """Load a saved itinerary file and build a Trip (destinations resolved via geo).
 
-    The file's daily_data_gb / currency / budget are authoritative unless the
-    matching keyword overrides them (e.g. `recommend --itinerary FILE --currency X`).
+    The file's daily_data_gb / currency / budget / transfer_data are authoritative
+    unless the matching keyword overrides them (e.g. `recommend --itinerary FILE --currency X`).
     Currency (and any override) is validated against the supported set.
     """
     stops, settings = load_itinerary_file(path)
@@ -235,12 +266,16 @@ def load_itinerary_trip(
     daily = settings["daily_data_gb"] if daily_data_gb is None else daily_data_gb
     cur = settings["currency"] if not currency else currency
     bud = settings.get("budget") if budget is None else budget
+    tdata = settings.get("transfer_data", 0.0) if transfer_data is None else transfer_data
     if daily is None or daily <= 0:
         raise StopError("'daily_data_gb' must be a positive number")
+    if not 0.0 <= tdata <= 1.0:
+        raise StopError("'transfer_data' must be a fraction between 0 and 1")
     code, cur_err = validate_currency_code(cur)
     if cur_err is not None:
         raise StopError(f"invalid currency {cur!r}: {cur_err}")
-    return build_trip(resolved, daily_data_gb=daily, currency=code, budget=bud)
+    return build_trip(resolved, daily_data_gb=daily, currency=code, budget=bud,
+                      transfer_data=tdata)
 
 
 def save_itinerary_file(trip: Trip, path: Path, overwrite: bool = False) -> Path:
@@ -258,6 +293,7 @@ def save_itinerary_file(trip: Trip, path: Path, overwrite: bool = False) -> Path
             for leg in trip.legs
         ],
         "daily_data_gb": _gb(trip.daily_data_gb),
+        "transfer_data": _gb(trip.transfer_data),
         "currency": trip.currency,
     }
     if trip.budget is not None:

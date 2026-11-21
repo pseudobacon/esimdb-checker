@@ -90,6 +90,7 @@ class RecommendationEngine:
         self._regional_scope_mode = "exhaustive"
         self._regional_windowed_plans = 0
         self._partition_search = "exact"
+        self._transfer_bounds: dict[Leg, tuple[int, int]] = {}
         # Purchase policy: None keeps the historic behaviour of recommending the cheapest
         # strategy whatever it costs in eSIMs. max_purchases is a hard limit; fewer_sims
         # trades price for convenience, up to a tolerance in percent.
@@ -129,6 +130,27 @@ class RecommendationEngine:
 
         self.legs = [(i, leg) for i, leg in enumerate(trip.legs) if not leg.is_transfer]
         self.leg_by_idx = {i: leg for i, leg in self.legs}
+        self._transfer_bounds = {}
+        if trip.transfer_data:
+            # A charged flying day must be inside the window of the plan that pays for it:
+            # pre-days (the leg's own plus any 0-day legs before it) require the plan to be
+            # active from the first of them; post-days (0-day legs after it, charged back)
+            # require validity through the last of them. With transfer_data == 0 nothing is
+            # charged and every check below stays exactly as before.
+            for i, leg in self.legs:
+                pre = leg.transfer_days
+                j = i - 1
+                while j >= 0 and trip.legs[j].days == 0:
+                    pre += trip.legs[j].transfer_days
+                    j -= 1
+                post = leg.end_day
+                j = i + 1
+                while j < len(trip.legs) and trip.legs[j].days == 0:
+                    # A 0-day leg occupies slots start-T..start-1 (start sits past the last).
+                    post = max(post, trip.legs[j].start_day - 1)
+                    j += 1
+                if pre > 0 or post > leg.end_day:
+                    self._transfer_bounds[leg] = (leg.start_day - pre, post)
         distinct_slugs = list(dict.fromkeys(leg.country.slug for _, leg in self.legs))
         names = {}
         for _, leg in self.legs:
@@ -199,13 +221,17 @@ class RecommendationEngine:
 
     def _validity_info(self, plan: Plan, activation_day: int, legs: list[Leg]) -> tuple[bool, bool]:
         """Return (hard_ok, unverified). hard_ok is False if the plan provably
-        expires before some leg ends. unverified is True if any served leg has an
-        unknown listed period."""
+        expires before some leg ends, or (with charged flying days) is not active on a
+        charged pre-day; unverified is True if any served leg has an unknown listed period."""
         hard_ok = True
         unverified = False
         for leg in legs:
+            bounds = self._transfer_bounds.get(leg)
+            if bounds is not None and activation_day > bounds[0]:
+                hard_ok = False   # not yet active when the charged flying day starts
+            end = max(leg.end_day, bounds[1]) if bounds is not None else leg.end_day
             if plan.period_days > 0:
-                if activation_day + plan.period_days - 1 < leg.end_day:
+                if activation_day + plan.period_days - 1 < end:
                     hard_ok = False
             else:
                 unverified = True
@@ -242,6 +268,19 @@ class RecommendationEngine:
                 f"'{plan.name}' is accepted despite a speed cap because the throttle starts only "
                 f"once the allowance is spent ({phrase}); the data this strategy needs fits inside "
                 f"the full-speed allowance"
+            )
+        flying = []
+        for leg in legs:
+            b = self._transfer_bounds.get(leg)
+            if b is None:
+                continue
+            flying.extend(range(b[0], leg.start_day))
+            flying.extend(range(leg.end_day + 1, b[1] + 1))
+        if flying:
+            days = ", ".join(str(d) for d in flying)
+            out.append(
+                f"assumes '{plan.name}' also provides data on flying day(s) {days}, each "
+                f"charged at {trip.transfer_data:g}x the daily need"
             )
         return out
 
@@ -1203,6 +1242,12 @@ class RecommendationEngine:
                 f"needs {lead} more validity {day_word} than the road days it serves. Data need "
                 f"is unchanged: the allowance still covers only the legs it serves, not the "
                 f"lead-in {day_word}."
+            )
+        if trip.transfer_data:
+            notes.append(
+                f"Flying/transfer days are charged at {trip.transfer_data:g}x the daily data "
+                f"need (--transfer-data): each such day rides on the plan active on it, which "
+                f"must be switched on before it and valid through it."
             )
         if self._partition_search != "exact":
             notes.append(

@@ -109,6 +109,22 @@ def test_wizard_console_report_printed_exactly_once(tmp_path, monkeypatch):
     assert "Currency for prices and budget" in err.getvalue()   # questions stay in the wizard
 
 
+def test_wizard_transfer_data_reaches_the_report(tmp_path, monkeypatch):
+    """A flying-day fraction typed on the command line must reach the report, not die in args."""
+    # Same as WIZARD_ANSWERS, but Spain carries one transfer (flying) day: after adding a leg
+    # the wizard returns to the menu, so 'france' is a menu answer, and the finish is later.
+    answers = "spain\n4\n1\nfrance\n7\n\n\n\n200\n2\ny\n\n"
+    out, err = fake_tty(monkeypatch, answers)
+    with _mocked(tmp_path):
+        rc = main(wizard_args(tmp_path, "--transfer-data", "0.5", "--json"))
+    assert rc == 0
+    data = json.loads(out.getvalue())
+    assert data["itinerary"]["transfer_data"] == 0.5
+    # Spain: (4 + 0.5) days x 2 GB + France: 7 x 2 GB = 23 GB, not 22.
+    assert data["itinerary"]["required_gb"] == 23.0
+    assert REPORT_MARKER not in out.getvalue()   # stdout stayed pure JSON
+
+
 def test_wizard_show_purchases_reaches_the_report(tmp_path, monkeypatch):
     """The wizard accepts the shared flag and the report actually honours it.
 

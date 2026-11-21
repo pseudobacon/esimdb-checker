@@ -22,7 +22,7 @@ from conftest import (
     mock_plans_route,
 )
 
-from esimdb_checker.itinerary import build_trip
+from esimdb_checker.itinerary import StopError, build_trip
 from esimdb_checker.models import Country
 from esimdb_checker.recommend import _MAX_PARTITION_LEGS, RecommendationEngine
 from esimdb_checker.report import render_console
@@ -47,8 +47,9 @@ def entry(pid, provider, name, cap_mb, period, usd, **kw):
     )
 
 
-def _trip(stops, daily_data_gb=1.0, currency="USD", budget=None):
-    return build_trip(stops, daily_data_gb=daily_data_gb, currency=currency, budget=budget)
+def _trip(stops, daily_data_gb=1.0, currency="USD", budget=None, transfer_data=0.0):
+    return build_trip(stops, daily_data_gb=daily_data_gb, currency=currency, budget=budget,
+                      transfer_data=transfer_data)
 
 
 def _run(tmp_path, slugs_payloads, trip, **eng_kw):
@@ -409,6 +410,69 @@ def test_transfer_days_are_included_in_the_reported_travel_day_span(tmp_path):
     text = render_console(rep)
     assert "12 charged day(s) over 13 travel day(s)" in text
     assert "1–13" in text
+
+
+# ---------------------------------------------------------------------------
+# --transfer-data: flying days charge a fraction of the daily need
+# ---------------------------------------------------------------------------
+def test_transfer_data_charges_flying_days_into_the_requirements():
+    stops = [(ES, 4, 1), (FR, 5, 0), (None, 0, 1)]   # pre-day on ES, tail layover after FR
+    plain = build_trip(stops, daily_data_gb=1.0, currency="USD")
+    assert [leg.required_gb for leg in plain.legs] == [4.0, 5.0, 0.0]
+    assert plain.required_gb == 9.0
+
+    half = build_trip(stops, daily_data_gb=1.0, currency="USD", transfer_data=0.5)
+    # The pre-day rides on its own leg; the tail 0-day leg's share rides on the previous leg.
+    assert [leg.required_gb for leg in half.legs] == [4.5, 5.5, 0.0]
+    assert half.required_gb == 10.0
+    assert half.transfer_data == 0.5
+
+    with pytest.raises(StopError):
+        build_trip(stops, daily_data_gb=1.0, currency="USD", transfer_data=1.5)
+
+
+def test_a_plan_ending_before_a_charged_tail_day_is_infeasible(tmp_path):
+    """With a charged layover day, the covering plan must stay valid through it."""
+    stops = [(ES, 4, 0), (None, 0, 1)]
+    short = entry("es-5d", A, "Spain 5GB/5Days", 5000, 5, 4.0)
+    exact = entry("es-6d", A, "Spain 6GB/6Days", 6000, 6, 6.0)
+    longp = entry("es-30d", A, "Spain 10GB/30Days", 10000, 30, 9.0)
+    payload = [("spain", build_plans_payload([short, exact, longp]))]
+    # F=0: the layover needs nothing, the short 5-day plan (activated day 0, ends day 4) wins.
+    rep0 = _run(tmp_path, payload, _trip(stops, daily_data_gb=1.0))
+    assert rep0.recommended.plans[0].plan.id == "es-5d"
+    # F=0.5: day 5 needs 0.5 GB from a valid plan. The 5-day plan (ends day 4) dies on
+    # validity; the 6-day plan ends exactly on the layover day and must stay feasible -
+    # this pins the slot arithmetic (a plan valid through day 5 is not short by one day).
+    rep1 = _run(tmp_path, payload, _trip(stops, daily_data_gb=1.0, transfer_data=0.5))
+    assert rep1.recommended.plans[0].plan.id == "es-6d"
+
+
+def test_transfer_data_charges_the_pool_not_just_the_header(tmp_path):
+    """The half-day must come out of the serving plan's allowance."""
+    stops = [(ES, 4, 1)]   # 4 GB + 0.5 GB flying day = 4.5 GB needed
+    tight = entry("es-tight", A, "Spain 4.5GB/30Days", 4500, 30, 5.0)   # 4.39 GB: short by a hair
+    roomy = entry("es-roomy", A, "Spain 10GB/30Days", 10000, 30, 9.0)
+    payload = [("spain", build_plans_payload([tight, roomy]))]
+    rep0 = _run(tmp_path, payload, _trip(stops, daily_data_gb=1.0))
+    assert rep0.recommended.plans[0].plan.id == "es-tight"     # 4 GB fits 4.39 GB
+    rep1 = _run(tmp_path, payload, _trip(stops, daily_data_gb=1.0, transfer_data=0.5))
+    assert rep1.recommended.plans[0].plan.id == "es-roomy"     # 4.5 GB does not
+
+
+def test_pre_day_needs_the_plan_already_active(tmp_path):
+    """Installing on arrival (lead 0) leaves a charged flying day without an active plan."""
+    stops = [(ES, 4, 1)]
+    only = entry("es-only", A, "Spain 10GB/30Days", 10000, 30, 9.0)
+    payload = [("spain", build_plans_payload([only]))]
+    # Default lead 1: activated day 1, active on the flying day (day 1) - feasible.
+    ok = _run(tmp_path, payload, _trip(stops, daily_data_gb=1.0, transfer_data=0.5))
+    assert ok.recommended is not None
+    # Lead 0: activated day 2, the flying day (day 1) has no active plan - infeasible.
+    bad = _run(tmp_path, payload, _trip(stops, daily_data_gb=1.0, transfer_data=0.5),
+               activate_lead_days=0)
+    assert bad.recommended is None
+    assert all(s is None for s in bad.strategies.values())
 
 
 def test_wide_trips_search_windows_and_say_so(tmp_path):

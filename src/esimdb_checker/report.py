@@ -57,6 +57,7 @@ def _itinerary_lines(report: Report) -> list[str]:
         + (f", budget {_money(it.budget, it.currency)}" if it.budget is not None else ", no budget")
         + f", speed-capped: {_cap_state(report)}"
         + _activation_state(report)
+        + _transfer_state(report)
     ]
     lines.append(f"  {'Destination':<22} {'Days':>5}  {'Travel days':>12}  {'Required data':>14}")
     for leg in it.legs:
@@ -253,6 +254,13 @@ def _activation_state(report: Report) -> str:
         return ""
     return (f", activation: {lead} day{'s' if lead != 1 else ''} before the first arrival "
             f"each plan serves")
+
+
+def _transfer_state(report: Report) -> str:
+    f = report.trip.transfer_data
+    if not f:
+        return ""
+    return f", flying days: {f:g}x the daily data need"
 
 
 def _recommendation_lines(report: Report) -> list[str]:

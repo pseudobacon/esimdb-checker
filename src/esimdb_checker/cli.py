@@ -72,6 +72,11 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                         f"arrival without data means no way to install it (validity is measured "
                         f"from that earlier day; default {_DEFAULT_ACTIVATE_LEAD_DAYS}, "
                         f"pass 0 to install on arrival)")
+    p.add_argument("--transfer-data", type=float, metavar="FRACTION", default=None,
+                   help="fraction of the daily data need used on each transfer/flying day "
+                        "(0..1; default 0 = no data on transfer days, or the saved file's "
+                        "value with --itinerary; 0.5 charges half a day, and the serving "
+                        "plan must be active/valid through those days)")
     p.add_argument("--show-purchases", dest="show_purchases", metavar="N[,N…]|all",
                    default=None,
                    help="also print the full buy list for the given 'Cost of convenience' "
@@ -240,6 +245,9 @@ def _validate_purchase_args(args) -> None:
     lead = getattr(args, "activate_lead_days", 0)
     if lead < 0:
         _fail("--activate-lead-days must not be negative (0 means 'install on arrival')", 2)
+    td = getattr(args, "transfer_data", None)
+    if td is not None and not 0.0 <= td <= 1.0:
+        _fail("--transfer-data must be a fraction between 0 and 1 (e.g. 0.5 for half a day)", 2)
     if getattr(args, "show_purchases", None) is not None:
         # Syntax only: whether a count exists at all depends on which strategies turn out
         # feasible, which is not known until the engine has run.
@@ -339,10 +347,12 @@ def cmd_recommend(args) -> int:
                 trip = load_itinerary_trip(
                     Path(args.itinerary), geo,
                     daily_data_gb=args.daily_data, currency=args.currency, budget=args.budget,
+                    transfer_data=args.transfer_data,
                 )
             else:
                 stops = _stops_from_args(args, geo)
-                trip = build_trip(stops, daily_data_gb=daily_data, currency=currency, budget=budget)
+                trip = build_trip(stops, daily_data_gb=daily_data, currency=currency, budget=budget,
+                                  transfer_data=args.transfer_data or 0.0)
         except CountryNotFoundError as e:
             print(f"error: {e}", file=sys.stderr)
             return 3
@@ -461,6 +471,8 @@ def cmd_wizard(args) -> int:
                 ok, err = state.set_daily_data(args.daily_data)
                 if not ok:
                     _fail(err)
+            if args.transfer_data is not None:
+                state.transfer_data = args.transfer_data
             if args.budget is not None:
                 state.budget = args.budget
         except CountryNotFoundError as e:

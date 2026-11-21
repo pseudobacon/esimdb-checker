@@ -208,3 +208,75 @@ def test_show_purchases_expands_ladder_rows(tmp_path, capsys):
         go("--show-purchases", "two")
     assert exc.value.code == 2
     assert "purchase counts" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# --transfer-data: flying days charge a fraction of the daily need
+# ---------------------------------------------------------------------------
+def test_transfer_data_flag_reaches_the_report(tmp_path, capsys):
+    """Half-day flying days must change the requirement, the header and the JSON."""
+    from esimdb_checker.itinerary import build_trip, save_itinerary_file
+    from esimdb_checker.models import Country
+
+    spain = Country(code="ES", name="Spain", slug="spain")
+    trip = build_trip([(spain, 4, 1)], daily_data_gb=1.0, currency="GBP")
+    path = save_itinerary_file(trip, tmp_path / "fly.itinerary.json", overwrite=True)
+
+    def go(*extra):
+        with respx.mock(assert_all_called=False) as router:
+            mock_geo_routes(router)
+            mock_fx_route(router, "GBP", 0.79)
+            mock_plans_route(router, "spain", _recommend_payload())
+            rc = main(["--data-dir", str(tmp_path), "recommend", "--itinerary", str(path),
+                       "--refresh", *extra])
+        return rc, capsys.readouterr()
+
+    rc, out = go("--transfer-data", "0.5", "--json")
+    assert rc == 0
+    data = json.loads(out.out)
+    assert data["itinerary"]["transfer_data"] == 0.5
+    assert data["itinerary"]["required_gb"] == 4.5      # 4 days + half a flying day
+
+    rc, out = go("--transfer-data", "0.5")
+    assert rc == 0
+    assert "flying days: 0.5x the daily data need" in out.out
+    assert "4.5 GB" in out.out
+
+    # Without the flag the saved file's 0 stands: the old behaviour.
+    rc, out = go("--json")
+    assert rc == 0
+    assert json.loads(out.out)["itinerary"]["required_gb"] == 4.0
+
+
+def test_transfer_data_rejects_out_of_range(tmp_path, capsys):
+    for bad in ("1.5", "-0.1"):
+        with pytest.raises(SystemExit) as exc:
+            main(["--data-dir", str(tmp_path), "recommend", "spain", "--days", "4",
+                  "--transfer-data", bad, "--json"])
+        assert exc.value.code == 2
+        assert "between 0 and 1" in capsys.readouterr().err
+
+
+def test_transfer_data_round_trips_through_the_saved_file(tmp_path, capsys):
+    with respx.mock(assert_all_called=False) as router:
+        mock_geo_routes(router)
+        mock_fx_route(router, "GBP", 0.79)
+        mock_plans_route(router, "spain", _recommend_payload())
+        rc = main(["--data-dir", str(tmp_path), "recommend", "spain", "--days", "4",
+                  "--daily-data", "1", "--currency", "GBP", "--refresh",
+                  "--transfer-data", "0.5", "--save-itinerary", str(tmp_path / "saved.json")])
+    assert rc == 0
+    saved = json.loads((tmp_path / "saved.json").read_text())
+    assert saved["transfer_data"] == 0.5
+    capsys.readouterr()   # drop the console report; the next runs print JSON
+
+    # Reload without the flag: the file's value survives...
+    rc = main(["--data-dir", str(tmp_path), "recommend",
+               "--itinerary", str(tmp_path / "saved.json"), "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["itinerary"]["transfer_data"] == 0.5
+    # ...and an explicit flag overrides it.
+    rc = main(["--data-dir", str(tmp_path), "recommend",
+               "--itinerary", str(tmp_path / "saved.json"), "--transfer-data", "0", "--json"])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["itinerary"]["transfer_data"] == 0.0

@@ -150,6 +150,7 @@ esimdb-checker fetch "https://esimdb.com/api/client/countries"
 | `--max-purchases N` | recommend the cheapest strategy that buys at most N eSIMs | no limit |
 | `--fewer-sims [PCT]` | recommend the fewest eSIMs within PCT% of the cheapest total | off (`PCT` 10) |
 | `--activate-lead-days N` | install each eSIM N days before the first arrival it serves, and count validity from that earlier day | `1` (the day before; `0` = on arrival) |
+| `--transfer-data F` | charge each transfer/flying day F× the daily data need (0..1); the serving plan must be active and valid on that day | `0` (no data on transfer days, or the saved file's value) |
 | `--show-purchases N[,N…]` or `all` | also print the full buy list for those "Cost of convenience" rows, not just the recommended one | off |
 | `--json` | print the full typed report as JSON to stdout | console text |
 | `--md` | write a Markdown report (with `--out`, default `report.md`) | — |
@@ -325,6 +326,23 @@ The report header states the lead, and each plan prints the day it is assumed to
 compared without noticing the assumption. `--activate-lead-days 0` reproduces results from before
 this became the default.
 
+**Flying days are half-days, if you say they are.** A leg's transfer days (the `+N` in
+`--stop 'Country N +N'`, or a 0-day tail leg for a layover) used to mean *zero* data: real, but
+free. On a flight day you still use some data — half a day's worth is a good guess — so
+`--transfer-data 0.5` charges each transfer day at half the daily need. The charge lands on the
+plan that is active on that day: a leg's own pre-days ride on it (its plan activates there), and
+a tail layover rides on the previous leg, which must then stay valid through the layover. The
+serving plan's allowance shrinks by exactly the charge, and the report says so in the header,
+the per-leg required data, a provenance note, and each affected plan's assumptions. The default
+stays 0, so existing reports are unchanged; `--transfer-data` with `--activate-lead-days 0`
+interacts honestly — installing on arrival leaves a charged flying day with no active plan, and
+such options are rejected rather than quietly under-covered.
+
+```bash
+# one flying day before Thailand, charged at half: 'Thailand 5 +1' --transfer-data 0.5
+esimdb-checker recommend --itinerary trip.json --transfer-data 0.5
+```
+
 `--budget` is read in the trip's own currency — for `--itinerary`, the currency saved in the
 file, not the `--currency` default — so `--budget 20` against a GBP itinerary means £20. Pass
 `--budget-currency` when it is something else; the conversion goes through USD and reports
@@ -389,7 +407,7 @@ stderr). The fields added for the ladder and for `--show-purchases`:
 ## Testing
 
 ```bash
-uv run pytest                 # 202 offline tests (mocked API + headless TUI), no network
+uv run pytest                 # 210 offline tests (mocked API + headless TUI), no network
 uv run ruff check .           # lint - clean, exit 0
 ```
 
