@@ -237,8 +237,8 @@ A leg set needs >= 2 **legs**, not >= 2 countries: a trip that passes through th
 country twice can serve both visits with one longer plan.
 
 The ladder is what makes the price of convenience visible. On a 32-day, four-country
-trip it reads 1 eSIM £24.69 / 2 £18.63 / 3 £17.19 / 4 £17.21 / 5 £17.12 / 6 £18.70 —
-so "two eSIMs instead of five" is £1.51, which no three-family table could say. Two
+trip it reads 1 eSIM £24.69 / 2 £18.63 / 3 £17.41 / 4 £17.21 / 5 £17.32 / 6 £18.90 —
+so "two eSIMs instead of four" is £1.42, which no three-family table could say. Two
 opt-in policies act on it, both off by default so the recommendation stays purely
 cheapest:
 
@@ -247,7 +247,7 @@ cheapest:
   purchases that do work (`purchase_policy.max_purchases_satisfiable`).
 - `--fewer-sims [PCT]` — buys the fewest eSIMs whose total stays within PCT% (default
   10) of the cheapest answer. Absolute fewest is *not* the goal: on the trip above the
-  1-eSIM option is 44% dearer and correctly loses. The percentage is always measured
+  1-eSIM option is 43% dearer and correctly loses. The percentage is always measured
   against the *unrestricted* cheapest, even when a limit binds — otherwise `--max-purchases 1`
   would move the goalposts and call +44% "within 10%". When nothing inside a limit clears the
   tolerance the rule becomes `fewest_within_limit` and says so.
@@ -271,12 +271,15 @@ the strategy's assumptions and on its frontier row (`buys_same_plan_twice`).
 
 Feasibility rules:
 - **Activation window:** a plan is installed once, `activate_lead_days` before the earliest of
-  the legs it serves (default 0 = on arrival), and must still be valid when the last of those
-  legs ends: `activation_day + period_days - 1 >= leg.end_day`. A negative activation day is
-  meaningful ("the day before the trip starts") and is rendered as such. The lead moves validity
-  only — `required_gb` is a sum over the legs served, never the lead-in day — so a lead time
-  removes cheap short-validity candidates and can make the optimum *cheaper in eSIM count*
-  (README: lead 0 → 5 eSIMs, lead 1 → 4, lead 2 → 3 on the sample trip).
+  the legs it serves (**default 1** — installing needs internet, which arrival does not promise;
+  0 means install on arrival), and must still be valid when the last of those legs ends:
+  `activation_day + period_days - 1 >= leg.end_day`. A negative activation day is meaningful
+  ("the day before the trip starts") and is rendered as such. The lead moves validity only —
+  `required_gb` is a sum over the legs served, never the lead-in day — so it removes cheap
+  short-validity candidates, which are the glue of many-purchase splits: on the sample trip the
+  optimum goes 5 eSIMs → 4 → 3 as the lead goes 0 → 1 → 2. The clock is assumed to start at
+  installation (pessimistic; a provider that starts it at first connection costs nothing to
+  pre-install, and `--activate-lead-days 0` is the accurate setting for that).
 - **Coverage gate (authoritative):** a plan covers a leg only if its id is listed on
   that leg's destination page. A whole-trip plan must be listed on every leg's page.
 - **Speed caps (`speed_cap_signals`, default):** a plan is excluded only when it is

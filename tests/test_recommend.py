@@ -326,7 +326,9 @@ def test_regional_plan_may_serve_only_a_window_of_a_longer_trip(tmp_path):
     # Why it is not a whole-trip purchase is stated, not left to inference.
     named = {e["id"]: e for e in rep.diagnostics["regional_near_matches"]}
     assert "eu-asia-50-30" in named
-    assert named["eu-asia-50-30"]["short_by_days"] == 2
+    # Counted from the install day, which is the day before the first arrival by default:
+    # installed on travel day 0, 30 days of validity reaches day 29, and the trip ends on 32.
+    assert named["eu-asia-50-30"]["short_by_days"] == 3
 
 
 def test_one_plan_can_cover_two_visits_to_the_same_country(tmp_path):
@@ -682,22 +684,29 @@ def test_activating_before_arrival_buys_fewer_esims(tmp_path):
         day_early.diagnostics["data_insufficient_filtered"]
 
 
-def test_activation_lead_days_is_disclosed_and_off_by_default(tmp_path):
+def test_activation_lead_days_defaults_to_installing_the_day_before(tmp_path):
+    """The default is a product decision, so it gets asserted - it must not drift."""
     trip = _trip([(ES, 5, 0)])
     es = entry("es-10-30", A, "Spain 10GB/30Days", 10000, 30, 5.0)
     payloads = [("spain", build_plans_payload([es]))]
-    quiet = _run(tmp_path, payloads, trip)
-    assert "activation:" not in render_console(quiet)
-    assert quiet.totals["activation_lead_days"] == 0
 
-    disclosed = _run(tmp_path, payloads, trip, activate_lead_days=2)
-    line = next(ln for ln in render_console(disclosed).splitlines()
-                if ln.startswith("Itinerary:"))
-    assert "activation: 2 days before the first arrival each plan serves" in line
-    assert disclosed.totals["activation_lead_days"] == 2
-    # travel day 0 means "before the trip starts", and the report has to say that rather
-    # than pointing at a day that does not exist.
-    assert disclosed.recommended.plans[0].activation_day == -1
-    # A negative travel day means "before the trip starts" - the report has to say that
-    # rather than point at a day the itinerary does not have.
-    assert "day before the trip starts" in render_console(disclosed)
+    default = _run(tmp_path, payloads, trip)
+    assert default.totals["activation_lead_days"] == 1
+    console = render_console(default)
+    line = next(ln for ln in console.splitlines() if ln.startswith("Itinerary:"))
+    assert "activation: 1 day before the first arrival each plan serves" in line
+    assert default.recommended.plans[0].activation_day == 0
+    # Travel day 0 means "before the trip starts" - the report has to say that rather than
+    # point at a day the itinerary does not have.
+    assert "day before the trip starts" in console
+
+    # 0 is still reachable, and it is the only way to reproduce pre-2026-11 numbers.
+    arrival = _run(tmp_path, payloads, trip, activate_lead_days=0)
+    assert arrival.totals["activation_lead_days"] == 0
+    assert "activation:" not in render_console(arrival)
+    assert arrival.recommended.plans[0].activation_day == 1
+    assert "day before the trip starts" not in render_console(arrival)
+
+    two = _run(tmp_path, payloads, trip, activate_lead_days=2)
+    assert two.recommended.plans[0].activation_day == -1
+    assert "activation: 2 days before the first arrival each plan serves" in render_console(two)

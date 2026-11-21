@@ -124,7 +124,7 @@ vacuous note, budget precedence including the over-budget-under-a-limit message,
 itinerary file in both currency modes, and `convert_between`), `ruff check .` clean. Re-checked on
 the real itinerary: the ladder still reads 1 £24.69 / 2 £18.63 / 3 £17.19 / 4 £17.21 / 5 £17.12 /
 6 £18.70, and the default recommendation is still 5 purchases at £17.12 — the fixes changed what
-is *claimed*, not what is *chosen*.
+is *claimed*, not what is *chosen*. (Those are lead-0 numbers; the default lead is now 1.)
 
 ### Installing before you fly: the lead-in day buys *fewer* eSIMs
 
@@ -132,7 +132,7 @@ Asked whether the usual habit of activating an eSIM the day before arrival — b
 no internet on arrival to install it — changes the optimal combination. It was not modellable:
 every activation in the engine happened exactly on the day of arrival (`min(leg.start_day)`), so
 the question could not be asked of it. Added `activate_lead_days` (CLI `--activate-lead-days N`,
-default 0 so existing results stay comparable), routed through one `_activation_day(legs)` helper
+0 on arrival at the time — 1 by default now, see the next subsection), routed through one `_activation_day(legs)` helper
 used by the local candidates, the multi-leg candidates, the strategies, the diagnostics and the
 assumption text, so no site can forget it.
 
@@ -178,6 +178,34 @@ twice` row that only the degenerate split produces, the header/note disclosure w
 off, and the CLI flag reaching the engine plus its rejection of negatives), `ruff check .` clean.
 
 ---
+
+### The lead became the default: `--activate-lead-days 1`
+
+Asked whether the day-before install should be the default: yes — it is what actually happens.
+Installing needs internet, and arrival does not promise any. Flipping a default is a bigger change
+than it looks, so the same commit does the three jobs that make a default safe to own:
+
+- **The engine and the CLI share one constant** (`_DEFAULT_ACTIVATE_LEAD_DAYS`) instead of two
+  literals that can drift apart. The constructor now distinguishes `None` (use the default) from
+  an explicit `0` (install on arrival); the `int(x or 0)` it replaced collapsed the two, which is
+  the same bug class as "`--max-purchases 0` is a no-op".
+- **The default is asserted by a test**, so reverting it is a deliberate act rather than drift.
+- **Every documented number was re-measured, none scaled.** The sample trip's default answer moved
+  from 5 purchases £17.12 to 4 purchases £17.21, the ladder to 3:£17.41 / 5:£17.32 / 6:£18.90, and
+  `--budget 18 --fewer-sims` from 5 purchases to 4. README, ARCHITECTURE and the HANDOFF checks
+  block quote re-run values, and the `--max-purchases 1` line there is corrected too — it claimed
+  "nothing recommended" when the 1-eSIM answer has been £24.69 all along.
+
+Blast radius on the suite: two assertions in 195. `short_by_days` went 2 → 3 (a 30-day plan
+installed the day before reaches travel day 29, not 30), and the lead-disclosure test was renamed
+to assert the new default. Everything else passed untouched, because nearly every fixture gives
+plans validity to spare — tight-fitting plans are exactly, and only, what a lead touches.
+
+Recorded in README Limitations: the clock is assumed to start at **installation**, the pessimistic
+reading. A provider that starts validity on first connection to a supported network makes
+pre-installing free, and for those `--activate-lead-days 0` is the accurate setting. The engine
+cannot tell which kind a plan is; the provider's terms can, and the assumption line is where to
+look them up.
 
 ## 2026-11-21 — Multi-leg plans were invisible: candidate generation fixed
 

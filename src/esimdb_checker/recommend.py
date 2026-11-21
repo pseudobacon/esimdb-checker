@@ -40,6 +40,13 @@ _MAX_SUBSET_LEGS = 8
 # and says so in the report, rather than either hanging or quietly answering nothing.
 _MAX_PARTITION_LEGS = 10
 
+# How long before the first arrival a plan is assumed to be installed. 1, not 0: installing an
+# eSIM needs internet, and arriving with none is exactly the case people plan around, so a model
+# that installs on arrival prices a trip nobody takes. It costs validity only - the lead-in day is
+# not a roaming day - and it is what makes the recommendation move between 4 and 5 eSIMs on a
+# multi-country trip. Pass 0 to reproduce pre-2026-11 results.
+_DEFAULT_ACTIVATE_LEAD_DAYS = 1
+
 
 class RecommendationEngine:
     def __init__(
@@ -55,7 +62,7 @@ class RecommendationEngine:
         strict_speed_cap: bool = False,
         max_purchases: int | None = None,
         fewer_sims_pct: float | None = None,
-        activate_lead_days: int = 0,
+        activate_lead_days: int = _DEFAULT_ACTIVATE_LEAD_DAYS,
     ) -> None:
         self.client = client
         self.data_dir = data_dir
@@ -92,7 +99,11 @@ class RecommendationEngine:
         # usually the day (or flight) before crossing a border, because arrival with no data
         # means no way to install it. Every validity check below measures from that earlier
         # day, so a plan whose validity exactly matched the road days now falls short.
-        self.activate_lead_days = max(0, int(activate_lead_days or 0))
+        # An explicit 0 means "install on arrival" and must survive; only None means "use the
+        # product default", which is shared with the CLI so the two cannot disagree.
+        lead = (_DEFAULT_ACTIVATE_LEAD_DAYS if activate_lead_days is None
+                else int(activate_lead_days))
+        self.activate_lead_days = max(0, lead)
         self.manifests: dict[str, dict[str, Any]] = {}
         self.source_urls: list[str] = []
         self.fetch_status: dict[str, dict[str, Any]] = {}

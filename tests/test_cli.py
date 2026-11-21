@@ -138,6 +138,12 @@ def test_activate_lead_days_reaches_the_engine(tmp_path, capsys):
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     assert data["totals"]["activation_lead_days"] == 1
+    capsys.readouterr()
+
+    # And it is the default, not merely something the flag can ask for.
+    assert main(["--data-dir", str(tmp_path), "recommend", "--itinerary", str(path),
+                 "--json", "--refresh"]) == 0
+    assert json.loads(capsys.readouterr().out)["totals"]["activation_lead_days"] == 1
     # A negative lead means "install after arriving", which is not a thing.
     with pytest.raises(SystemExit) as exc:
         main(["--data-dir", str(tmp_path), "recommend", "spain", "--days", "9",

@@ -26,22 +26,25 @@ day counts, data need, validity and budget. Research only — it never buys or a
 ## Checks that were actually run (2026-11-22, re-run after review)
 
 ```
-python -m pytest tests/ -p no:cacheprovider   -> 192 passed in 82.57s
+python -m pytest tests/ -p no:cacheprovider   -> 195 passed in 82.74s
 python -m ruff check .                        -> All checks passed (exit 0)
-esimdb-checker recommend --itinerary asia-2026.itinerary.json
-     -> Cost of convenience: 1 £24.69 / 2 £18.63 / 3 £17.19 / 4 £17.21 / 5 £17.12 / 6 £18.70
-esimdb-checker recommend … --fewer-sims        -> 2 eSIMs £18.63 (10% tolerance)
-esimdb-checker recommend … --max-purchases 2   -> 2 eSIMs; --max-purchases 1 -> nothing recommended
-esimdb-checker recommend … --fewer-sims 3 --max-purchases 4 -> 3 eSIMs, both notes shown
+esimdb-checker recommend --itinerary asia-2026.itinerary.json    (default install lead = 1 day)
+     -> Cost of convenience: 1 £24.69 / 2 £18.63 / 3 £17.41 / 4 £17.21 / 5 £17.32 / 6 £18.90
+     -> default recommendation: 4 purchases £17.21; header carries
+        "activation: 1 day before the first arrival each plan serves"
+esimdb-checker recommend … --activate-lead-days 0
+     -> 1 £24.69 / 2 £18.63 / 3 £17.19 / 4 £17.21 / 5 £17.12 / 6 £18.70, 5 purchases £17.12
+        (a LONGER install lead buys FEWER eSIMs; see DEVELOPMENT-LOG 2026-11-22)
+esimdb-checker recommend … --fewer-sims        -> 2 eSIMs £18.63 (+8.2%, inside the 10% tolerance)
+esimdb-checker recommend … --max-purchases 2   -> 2 eSIMs £18.63; --max-purchases 1 -> 1 eSIM £24.69
+esimdb-checker recommend … --fewer-sims 3 --max-purchases 4 -> 3 eSIMs £17.41
 esimdb-checker recommend … --fewer-sims 10 --max-purchases 1 -> rule fewest_within_limit,
      tolerance_met false, header "fewest eSIMs the 1-eSIM limit allows" (no false 10% claim)
-esimdb-checker recommend … --budget 18         -> budget £18.00 respected (this path used to crash)
+esimdb-checker recommend … --budget 18         -> 4 purchases £17.21, within budget (path used to crash)
 esimdb-checker recommend … --budget 17.5 --max-purchases 2
-     -> "A 3-purchase strategy at £17.19 would fit - a purchase policy is what ruled it out"
-esimdb-checker recommend … --budget 18 --fewer-sims -> 5 purchases: the 2-eSIM split busts £18
-esimdb-checker recommend … --activate-lead-days 1 -> 4 purchases £17.21 (lead 0: 5 £17.12;
-     lead 2: 3 £17.41) — a longer install lead buys FEWER eSIMs; see DEVELOPMENT-LOG 2026-11-22
-python -m ruff check .                        -> All checks passed (exit 0)
+     -> "A 3-purchase strategy at £17.41 would fit - a purchase policy is what ruled it out"
+esimdb-checker recommend … --budget 18 --fewer-sims -> 4 purchases: the 2-eSIM split busts £18
+esimdb-checker recommend … --budget 17 --fewer-sims -> 2 eSIMs £18.63; nothing on the ladder fits £17
 esimdb-checker recommend --itinerary …        -> console, --json, --md, --strict-speed-cap, --include-capped
 pty-driven wizard walkthrough                 -> see README "Verified in a terminal"
 ```
@@ -105,7 +108,8 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
     no floor exists), and the contiguous-window fallback says "fewest purchases found" because
     above 10 legs it does not search every split. Fixed after review; see DEVELOPMENT-LOG 2026-11-22.
 11. **Installation happens where the internet is known.** `activate_lead_days`
-    (`--activate-lead-days N`, default 0) moves every activation to N days before the earliest leg a
+    (`--activate-lead-days N`, **default 1**, asserted by a test so it cannot drift; 0 reproduces
+    the pre-2026-11 numbers) moves every activation to N days before the earliest leg a
     plan serves — through one `_activation_day(legs)` helper used by local candidates, multi-leg
     candidates, strategies, diagnostics and the assumption text, so no site can forget it. It shifts
     **validity only**: data need is a sum over served legs and the lead-in day is not one of them.

@@ -149,7 +149,7 @@ esimdb-checker fetch "https://esimdb.com/api/client/countries"
 | `--strict-speed-cap` | also exclude plans throttled only after the allowance | off |
 | `--max-purchases N` | recommend the cheapest strategy that buys at most N eSIMs | no limit |
 | `--fewer-sims [PCT]` | recommend the fewest eSIMs within PCT% of the cheapest total | off (`PCT` 10) |
-| `--activate-lead-days N` | install each eSIM N days before the first arrival it serves, and count validity from that earlier day | `0` (install on arrival) |
+| `--activate-lead-days N` | install each eSIM N days before the first arrival it serves, and count validity from that earlier day | `1` (the day before; `0` = on arrival) |
 | `--json` | print the full typed report as JSON to stdout | console text |
 | `--md` | write a Markdown report (with `--out`, default `report.md`) | — |
 | `--out FILE` | output file for `--md`, or for console text when `--md`/`--json` are absent; with `--json` also copies the JSON there while stdout stays clean | — |
@@ -265,13 +265,13 @@ visible instead of guessed:
 ```
 Cost of convenience (cheapest strategy for each number of eSIMs):
    eSIMs       Total   vs cheapest  Family
-       1      £24.69        +44.2%  whole_trip
-       2      £18.63         +8.8%  hybrid
-       5      £17.12      cheapest  hybrid   <- recommended
-       6      £18.70         +9.2%  local_only
+       1      £24.69        +43.4%  whole_trip
+       2      £18.63         +8.2%  hybrid
+       4      £17.21      cheapest  hybrid   <- recommended
+       6      £18.90         +9.8%  local_only
 ```
 
-That trip buys 5 eSIMs for £17.12 by default; two would cost £1.51 more. Ask for fewer:
+That trip buys 4 eSIMs for £17.21 by default; two would cost £1.42 more. Ask for fewer:
 
 ```bash
 esimdb-checker recommend --itinerary trip.json --fewer-sims       # fewest within 10% of cheapest
@@ -279,30 +279,32 @@ esimdb-checker recommend --itinerary trip.json --fewer-sims 3     # tighter tole
 esimdb-checker recommend --itinerary trip.json --max-purchases 2  # hard limit, whatever it costs
 ```
 
-**Installing before you fly can change the answer.** An eSIM needs internet to install, and
-arrival does not guarantee any, so most people install it the day before — on the flight, at the
-hotel, at home. That costs **validity, not data**: the allowance still only has to cover the days
-on the road, but the validity window now starts early and every purchase needs one more day of
-it. This cuts against intuition, because the plans that die are the cheap short-validity local
-ones that make many-eSIM splits cheap:
+**Installing before you fly is the model, and it changes the answer.** An eSIM needs internet to
+install and arrival does not guarantee any, so a plan is assumed to be installed the day before
+the first arrival it serves — on the flight, at the hotel, at home (`--activate-lead-days N`,
+default 1). That costs **validity, not data**: the allowance still only has to cover the days on
+the road, but the validity window starts early and every purchase needs one more day of it. This
+cuts against intuition, because the plans that die are the cheap short-validity local ones that
+make many-eSIM splits cheap:
 
-| lead time | cheapest answer | why it moved |
+| install lead | cheapest answer | why it moved |
 | --- | --- | --- |
-| 0 days (default: install on arrival) | **5 eSIMs, £17.12** | includes a Taiwan 10 GB/**5 Days** plan (£2.86) and a 1-day SE Asia plan (£0.87) |
-| `--activate-lead-days 1` | **4 eSIMs, £17.21** | the 5-day plan cannot span 6 days of validity, so the 30-day one (£3.82) replaces it — and covers the trip's *second* Taiwan visit as well, deleting the 1-day plan |
-| `--activate-lead-days 2` | **3 eSIMs, £17.41** | an Asia 20 GB/30d plan absorbs the Taiwan, Thailand and China visits |
+| `--activate-lead-days 0` (on arrival) | 5 eSIMs, £17.12 | includes a Taiwan 10 GB/**5 Days** plan (£2.86) and a 1-day SE Asia plan (£0.87) |
+| **1 (default)** | **4 eSIMs, £17.21** | the 5-day plan cannot span 6 days of validity, so the 30-day one (£3.82) replaces it — and covers the trip's *second* Taiwan visit as well, deleting the 1-day plan |
+| `--activate-lead-days 2` | 3 eSIMs, £17.41 | an Asia 20 GB/30d plan absorbs the Taiwan, Thailand and China visits |
 
-One day of lead time buys **fewer** eSIMs, for 9p more than the no-lead answer. The convenience
-options are untouched (still 2 eSIMs at £18.63 at either lead time) because those plans had
-validity to spare; a long-validity plan absorbs a lead-in day for free.
+One extra day of slack buys **fewer** eSIMs. The convenience options survive it (still 2 eSIMs at
+every lead — £18.63 up to 1 day, £19.01 at 2) because those plans had validity to spare; a
+long-validity plan absorbs a lead-in day for free.
 
 ```bash
-esimdb-checker recommend --itinerary trip.json --activate-lead-days 1
+esimdb-checker recommend --itinerary trip.json --activate-lead-days 0   # install on arrival
 ```
 
-The default stays 0 (install on arrival) so results stay comparable with older runs; the report
-header states the assumption either way, and each plan prints the day it is assumed to be
-installed on — including travel day 0, meaning "the day before the trip starts".
+The report header states the lead, and each plan prints the day it is assumed to be installed on
+— including travel day 0, meaning "the day before the trip starts" — so two runs cannot be
+compared without noticing the assumption. `--activate-lead-days 0` reproduces results from before
+this became the default.
 
 `--budget` is read in the trip's own currency — for `--itinerary`, the currency saved in the
 file, not the `--currency` default — so `--budget 20` against a GBP itinerary means £20. Pass
@@ -435,9 +437,14 @@ Worth knowing before acting on a report:
   break that assumption.
 - **Data need is an average.** `daily_data_gb × days` assumes even daily use; it does not model
   hotspotting, downloads, or a single heavy day on a daily-cap plan.
-- **Validity is calendar arithmetic from the listed period.** A plan is activated once, at the
-  earliest leg it serves. Plans whose period is unknown (`period_days == 0`) are used only with
-  an explicit assumption recorded in the report.
+- **Validity is calendar arithmetic from the listed period.** A plan is installed once, `N` days
+  before the earliest leg it serves (default 1, because installing needs internet that arrival may
+  not provide), and must still be valid when the last leg it serves ends. Plans whose period is
+  unknown (`period_days == 0`) are used only with an explicit assumption recorded in the report.
+  The clock is assumed to start at **installation**, which is the pessimistic reading: some
+  providers start validity on first connection to a supported network, in which case the lead-in
+  day costs nothing and `--activate-lead-days 0` is the accurate setting. The provider's own terms
+  decide, and they are quoted on each assumption line.
 - **Currency is ECB reference data, not your bank.** `--currency` converts with Frankfurter
   (ECB reference rates, cached 12 h). It ignores card fees, spreads, and the provider's billing
   currency, so totals are comparable but not what you will actually be charged.

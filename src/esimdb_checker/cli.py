@@ -24,7 +24,7 @@ from .itinerary import (
     save_itinerary_file,
 )
 from .models import Trip
-from .recommend import RecommendationEngine
+from .recommend import _DEFAULT_ACTIVATE_LEAD_DAYS, RecommendationEngine
 from .report import render_console, render_json, write_report
 
 
@@ -66,10 +66,12 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                    const=10.0, default=None, metavar="PCT",
                    help="recommend the fewest eSIMs whose total stays within PCT%% of the "
                         "cheapest answer (default 10%%)")
-    p.add_argument("--activate-lead-days", type=int, metavar="N", default=0,
-                   help="assume each eSIM is installed N days before the first arrival it "
-                        "serves, because arrival without data means no way to install it "
-                        "(validity is then measured from that earlier day; default 0 = on arrival)")
+    p.add_argument("--activate-lead-days", type=int, metavar="N",
+                   default=_DEFAULT_ACTIVATE_LEAD_DAYS,
+                   help=f"install each eSIM N days before the first arrival it serves, because "
+                        f"arrival without data means no way to install it (validity is measured "
+                        f"from that earlier day; default {_DEFAULT_ACTIVATE_LEAD_DAYS}, "
+                        f"pass 0 to install on arrival)")
     p.add_argument("--refresh", action="store_true",
                    help="re-fetch from esimdb.com, bypassing the cache")
 
@@ -191,7 +193,7 @@ def _run_engine(client: httpx.Client, trip: Trip, args, data_dir: Path, use_cach
         provider=getattr(args, "provider", None),
         max_purchases=getattr(args, "max_purchases", None),
         fewer_sims_pct=getattr(args, "fewer_sims_pct", None),
-        activate_lead_days=getattr(args, "activate_lead_days", 0),
+        activate_lead_days=getattr(args, "activate_lead_days", _DEFAULT_ACTIVATE_LEAD_DAYS),
     )
     engine.load(trip, progress=progress)
     return engine.recommend(trip)
