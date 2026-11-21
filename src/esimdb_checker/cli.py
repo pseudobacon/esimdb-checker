@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -58,6 +59,13 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                    help="also exclude plans throttled only after their allowance is spent "
                         "(the pre-2026-08 behaviour); by default those are kept, since a "
                         "plan that covers the trip's data need never reaches the throttle")
+    p.add_argument("--max-purchases", type=int, metavar="N", default=None,
+                   help="recommend the cheapest strategy that buys at most N eSIMs "
+                        "(fewer QR codes costs more: see the 'Cost of convenience' table)")
+    p.add_argument("--fewer-sims", dest="fewer_sims_pct", nargs="?", type=float,
+                   const=10.0, default=None, metavar="PCT",
+                   help="recommend the fewest eSIMs whose total stays within PCT%% of the "
+                        "cheapest answer (default 10%%)")
     p.add_argument("--refresh", action="store_true",
                    help="re-fetch from esimdb.com, bypassing the cache")
 
@@ -90,7 +98,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--budget", type=float, default=None,
                      help="total trip budget (in --budget-currency, default --currency)")
     rec.add_argument("--budget-currency", default=None, type=_currency_arg,
-                     help="currency the budget is expressed in (defaults to --currency)")
+                     help="currency the budget is expressed in (default: the trip's)")
     rec.add_argument("--currency", default=None, type=_currency_arg,
                      help="requested ranking/report currency (default EUR)")
     rec.add_argument("--daily-data", dest="daily_data", type=float, default=None,
@@ -177,9 +185,21 @@ def _run_engine(client: httpx.Client, trip: Trip, args, data_dir: Path, use_cach
         include_capped=getattr(args, "include_capped", False),
         strict_speed_cap=getattr(args, "strict_speed_cap", False),
         provider=getattr(args, "provider", None),
+        max_purchases=getattr(args, "max_purchases", None),
+        fewer_sims_pct=getattr(args, "fewer_sims_pct", None),
     )
     engine.load(trip, progress=progress)
     return engine.recommend(trip)
+
+
+def _validate_purchase_args(args) -> None:
+    """Reject purchase-policy options that cannot mean anything."""
+    limit = getattr(args, "max_purchases", None)
+    if limit is not None and limit < 1:
+        _fail("--max-purchases must be at least 1 (omit it for no limit)", 2)
+    pct = getattr(args, "fewer_sims_pct", None)
+    if pct is not None and pct < 0:
+        _fail("--fewer-sims must not be negative (0 means 'only if it costs no more')", 2)
 
 
 def _validate_output_args(args) -> None:
@@ -245,6 +265,7 @@ def _write(path: Path, do_write) -> None:
 # ---------------------------------------------------------------------------
 def cmd_recommend(args) -> int:
     _validate_output_args(args)
+    _validate_purchase_args(args)
     if args.itinerary:
         # Cheap, offline validation first: a broken saved file is reported before
         # any network work.
@@ -255,7 +276,11 @@ def cmd_recommend(args) -> int:
     data_dir = _data_dir(args)
     use_cache = not args.refresh
     currency = args.currency or "EUR"
-    budget_currency = args.budget_currency or currency
+    # A budget with no currency named belongs to the trip, not to the --currency default:
+    # an --itinerary file carries its own currency, which is usually not the default, and
+    # treating the default as the budget's currency invents a conversion the user never
+    # asked for.
+    budget_currency = args.budget_currency or args.currency
     budget = args.budget
     daily_data = args.daily_data if args.daily_data is not None else 1.5
 
@@ -280,16 +305,25 @@ def cmd_recommend(args) -> int:
         except StopError as e:
             _fail(str(e))
 
-        # convert a budget given in another currency so ranking/budget agree
-        if budget is not None and budget_currency != trip.currency:
+        # Convert a budget expressed in a third currency so ranking and budget agree.
+        # A budget with no currency named belongs to the trip: `--itinerary` files carry
+        # their own currency, which is not the --currency default, so defaulting this to
+        # the CLI default would invent a conversion (and used to crash on it).
+        if budget is not None and budget_currency and budget_currency != trip.currency:
             from . import fx as fx_mod
 
-            fx = fx_mod.fetch_fx(client, trip.currency, data_dir, use_cache)
-            converted = fx_mod.convert(budget, budget_currency, trip.currency, fx)
+            fx_to = fx_mod.fetch_fx(client, trip.currency, data_dir, use_cache)
+            fx_from = fx_to if budget_currency == trip.currency else fx_mod.fetch_fx(
+                client, budget_currency, data_dir, use_cache
+            )
+            converted = fx_mod.convert_between(
+                budget, budget_currency, trip.currency, fx_from, fx_to
+            )
             if converted is None:
-                _fail(f"could not convert budget from {budget_currency} to "
-                      f"{trip.currency} (FX unavailable)")
-            trip.budget = converted
+                _fail(f"could not convert a budget from {budget_currency} to "
+                      f"{trip.currency} (FX unavailable); pass --budget in "
+                      f"{trip.currency} instead")
+            trip = replace(trip, budget=converted)
 
         if args.save_itinerary:
             saved = save_itinerary_file(trip, Path(args.save_itinerary), overwrite=args.overwrite)
@@ -327,6 +361,7 @@ def _stops_from_args(args, geo):
 
 def cmd_wizard(args) -> int:
     _validate_output_args(args)
+    _validate_purchase_args(args)
     from . import wizard as wz
 
     data_dir = _data_dir(args)

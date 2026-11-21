@@ -143,10 +143,12 @@ esimdb-checker fetch "https://esimdb.com/api/client/countries"
 | `--daily-data` | expected data per destination day, in GB | `1.5` |
 | `--currency` | currency for prices, ranking, budget, and totals | `EUR` |
 | `--budget` | optional total-trip budget | none |
-| `--budget-currency` | currency `--budget` is expressed in (converted for comparison) | `--currency` |
+| `--budget-currency` | currency `--budget` is expressed in (converted for comparison) | the trip's own currency |
 | `--provider` | restrict to one provider (name or slug) | all |
 | `--include-capped` | include every speed-capped plan, including always-throttled ones | off |
 | `--strict-speed-cap` | also exclude plans throttled only after the allowance | off |
+| `--max-purchases N` | recommend the cheapest strategy that buys at most N eSIMs | no limit |
+| `--fewer-sims [PCT]` | recommend the fewest eSIMs within PCT% of the cheapest total | off (`PCT` 10) |
 | `--json` | print the full typed report as JSON to stdout | console text |
 | `--md` | write a Markdown report (with `--out`, default `report.md`) | — |
 | `--out FILE` | output file for `--md`, or for console text when `--md`/`--json` are absent; with `--json` also copies the JSON there while stdout stays clean | — |
@@ -245,14 +247,41 @@ that is not a menu word is resolved as a destination name, ISO code, or slug.
 
 ### Reading a recommendation
 
-`recommend` builds three independent strategy families and recommends the cheapest feasible
-one (ranked in the requested currency):
+`recommend` prices every number of eSIMs and recommends the cheapest feasible option
+(ranked in the requested currency). The strategy table names three families, which are
+labels over that ladder rather than three searches:
 
-- **local-only** — one plan per destination.
-- **whole-trip** — a single plan listed on every destination's page (activated once).
-- **hybrid** — one multi-destination plan for a subset of the legs plus per-destination
-  plans for the rest. Two visits to the same country are two legs, so one longer plan can
-  serve both; a plan too short for the whole trip can still serve a window of it.
+- **whole-trip** (1 eSIM) — a single plan listed on every destination's page, activated once.
+- **hybrid** (2 to one-less-than-legs) — any other split, including two multi-destination
+  plans covering different halves of the trip. Two visits to the same country are two
+  legs, so one longer plan can serve both; a plan too short for the whole trip can still
+  serve a window of it.
+- **local-only** (one per destination) — the cheapest feasible plan for each leg.
+
+The report also prices the rungs in between, so the price of not carrying five QR codes is
+visible instead of guessed:
+
+```
+Cost of convenience (cheapest strategy for each number of eSIMs):
+   eSIMs       Total   vs cheapest  Family
+       1      £24.69        +44.2%  whole_trip
+       2      £18.63         +8.8%  hybrid
+       5      £17.12      cheapest  hybrid   <- recommended
+       6      £18.70         +9.2%  local_only
+```
+
+That trip buys 5 eSIMs for £17.12 by default; two would cost £1.51 more. Ask for fewer:
+
+```bash
+esimdb-checker recommend --itinerary trip.json --fewer-sims       # fewest within 10% of cheapest
+esimdb-checker recommend --itinerary trip.json --fewer-sims 3     # tighter tolerance
+esimdb-checker recommend --itinerary trip.json --max-purchases 2  # hard limit, whatever it costs
+```
+
+`--budget` is read in the trip's own currency — for `--itinerary`, the currency saved in the
+file, not the `--currency` default — so `--budget 20` against a GBP itinerary means £20. Pass
+`--budget-currency` when it is something else; the conversion goes through USD and reports
+which side was missing if it cannot be done.
 
 Each plan shows its activation day, which legs it serves (and their travel days), and any
 assumptions (e.g. a validity that must span the legs). A plan must be **data-feasible** and
@@ -274,7 +303,7 @@ it).
 ## Testing
 
 ```bash
-uv run pytest                 # 179 offline tests (mocked API + headless TUI), no network
+uv run pytest                 # 185 offline tests (mocked API + headless TUI), no network
 uv run ruff check .           # lint - clean, exit 0
 ```
 

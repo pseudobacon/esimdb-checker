@@ -73,3 +73,52 @@ def test_help_exits_zero():
     with pytest.raises(SystemExit) as exc:
         main(["--help"])
     assert exc.value.code == 0
+
+
+def _itinerary_file(tmp_path, currency="GBP"):
+    """A saved --itinerary file, which is what the budget path reads its currency from."""
+    from esimdb_checker.itinerary import build_trip, save_itinerary_file
+    from esimdb_checker.models import Country
+
+    spain = Country(code="ES", name="Spain", slug="spain")
+    trip = build_trip([(spain, 10, 0)], daily_data_gb=1.0, currency=currency)
+    return save_itinerary_file(trip, tmp_path / "trip.itinerary.json", overwrite=True)
+
+
+def test_budget_without_a_currency_belongs_to_the_itinerary(tmp_path, capsys):
+    # --itinerary carries its own currency, which is not the --currency default. The
+    # budget used to be assumed to be in the default, which invented a conversion and
+    # then crashed on a function that does not exist (and on assigning to a frozen Trip).
+    path = _itinerary_file(tmp_path, "GBP")
+    with respx.mock(assert_all_called=False) as router:
+        mock_geo_routes(router)
+        mock_fx_route(router, "GBP", 0.79)
+        mock_plans_route(router, "spain", _recommend_payload())
+        rc = main([
+            "--data-dir", str(tmp_path),
+            "recommend", "--itinerary", str(path),
+            "--budget", "20", "--json", "--refresh",
+        ])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["budget_status"]["budget"] == pytest.approx(20.0)
+    assert data["budget_status"]["currency"] == "GBP"
+
+
+def test_budget_currency_is_converted_into_the_trip_currency(tmp_path, capsys):
+    path = _itinerary_file(tmp_path, "GBP")
+    with respx.mock(assert_all_called=False) as router:
+        mock_geo_routes(router)
+        mock_fx_route(router, "GBP", 0.79)
+        mock_fx_route(router, "EUR", 0.92)
+        mock_plans_route(router, "spain", _recommend_payload())
+        rc = main([
+            "--data-dir", str(tmp_path),
+            "recommend", "--itinerary", str(path),
+            "--budget", "20", "--budget-currency", "EUR", "--json", "--refresh",
+        ])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    # 20 EUR -> USD at 1/0.92, then GBP at 0.79
+    assert data["budget_status"]["budget"] == pytest.approx(20 / 0.92 * 0.79, abs=1e-6)
+    assert data["budget_status"]["currency"] == "GBP"

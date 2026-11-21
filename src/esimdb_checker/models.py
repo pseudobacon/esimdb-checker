@@ -401,6 +401,11 @@ class Report:
     totals: dict[str, Any]
     speed_filter_status: dict[str, Any]
     notes: list[str]
+    # Cheapest strategy for each feasible number of eSIMs (1 purchase .. one per leg),
+    # plus the policy that chose `recommended`. Last, and defaulted: every field before
+    # these is required, so adding them here keeps existing constructors working.
+    purchase_frontier: list[dict[str, Any]] = field(default_factory=list)
+    purchase_policy: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -412,6 +417,8 @@ class Report:
                 k: (v.to_dict() if v else None) for k, v in self.strategies.items()
             },
             "budget_status": self.budget_status,
+            "purchase_frontier": self.purchase_frontier,
+            "purchase_policy": self.purchase_policy,
             "diagnostics": self.diagnostics,
             "totals": self.totals,
             "speed_filter_status": self.speed_filter_status,

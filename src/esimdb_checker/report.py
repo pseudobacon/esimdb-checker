@@ -105,6 +105,45 @@ def _strategy_table_lines(report: Report) -> list[str]:
     return lines
 
 
+def _frontier_lines(report: Report) -> list[str]:
+    """The purchase-count trade-off: what each number of eSIMs costs.
+
+    The strategy table prices one winner per family, so the cost of convenience was
+    guesswork: a whole-trip plan and a five-plan split both appeared, but nothing said
+    what *two* plans would cost. This is that ladder, cheapest at each rung.
+    """
+    rows = report.purchase_frontier
+    if not rows:
+        return []
+    lines = ["Cost of convenience (cheapest strategy for each number of eSIMs):"]
+    lines.append(f"  {'eSIMs':>6}  {'Total':>10}  {'vs cheapest':>12}  Family")
+    for r in rows:
+        pct = r.get("vs_cheapest_pct")
+        vs = "cheapest" if pct is None or abs(pct) < 0.05 else f"+{pct:.1f}%"
+        twice = "  (buys one plan twice)" if r.get("buys_same_plan_twice") else ""
+        lines.append(
+            f"  {r['purchases']:>6}  {_money(r['total_cost'], r['currency']):>10}"
+            f"  {vs:>12}  {r['family']}{twice}"
+            f"{'   <- recommended' if r.get('recommended') else ''}"
+        )
+    chosen = next((r for r in rows if r.get("recommended")), None)
+    fewest = rows[0]
+    if chosen is not None and fewest["purchases"] < chosen["purchases"]:
+        n = fewest["purchases"]
+        pct = fewest.get("vs_cheapest_pct") or 0.0
+        plans = "; ".join(
+            f"{p['name']} — {p['provider']} ({_money(p['price'], p['currency'])}, "
+            f"{'+'.join(p['legs'])})"
+            for p in fewest["plans"]
+        )
+        lines.append(
+            f"  Fewest that work: {n} eSIM{'s' if n != 1 else ''} for "
+            f"{_money(fewest['total_cost'], fewest['currency'])} (+{pct:.1f}% vs cheapest)"
+        )
+        lines.append(f"    {plans}")
+    return lines
+
+
 def _legs_label(strategy: Strategy, report: Report) -> str:
     parts = []
     for sp in strategy.plans:
@@ -156,9 +195,23 @@ def _recommendation_lines(report: Report) -> list[str]:
         lines.append(f"  {reason}")
         return lines
     bs = report.budget_status
-    lines = [
-        f"RECOMMENDED: {rec.family}  (cheapest price-comparable feasible strategy)"
-    ]
+    policy = report.purchase_policy or {}
+    n = rec.purchase_count
+    esims = "eSIM" if n == 1 else "eSIMs"
+    rule = policy.get("rule", "cheapest")
+    limit = policy.get("max_purchases")
+    if rule == "fewer_purchases":
+        pct = policy.get("fewer_sims_pct")
+        why = f"fewest {esims} within {pct:g}% of the cheapest total"
+    elif rule == "fewest_within_limit":
+        pct = policy.get("fewer_sims_pct")
+        why = (f"fewest eSIMs the {limit}-eSIM limit allows (none of them are within "
+               f"{pct:g}% of the cheapest total)")
+    elif limit is not None:
+        why = f"cheapest price-comparable strategy within {limit} eSIM{'s' if limit != 1 else ''}"
+    else:
+        why = "cheapest price-comparable feasible strategy"
+    lines = [f"RECOMMENDED: {rec.family}  ({why})"]
     for i, sp in enumerate(rec.plans, start=1):
         provider = sp.provider if hasattr(sp, "provider") else sp.plan.provider
         lines.append(f"  buy {i}. {sp.plan.name} — {provider}")
@@ -340,6 +393,8 @@ def render_console(report: Report) -> str:
     lines.append("")
     lines.extend(_strategy_table_lines(report))
     lines.append("")
+    lines.extend(_frontier_lines(report))
+    lines.append("")
     lines.extend(_recommendation_lines(report))
     lines.append("")
     lines.extend(_budget_lines(report))
@@ -386,6 +441,34 @@ def render_markdown(report: Report) -> str:
                 f"{'ok' if s.validity_ok else 'unverified'} | yes |"
             )
     w("")
+    if report.purchase_frontier:
+        w("## Cost of convenience")
+        w("")
+        w("| eSIMs | Total | vs cheapest | Family | |")
+        w("|-------|-------|-------------|--------|---|")
+        for r in report.purchase_frontier:
+            pct = r.get("vs_cheapest_pct")
+            vs = "cheapest" if pct is None or abs(pct) < 0.05 else f"+{pct:.1f}%"
+            marks = []
+            if r.get("buys_same_plan_twice"):
+                marks.append("buys one plan twice")
+            if r.get("recommended"):
+                marks.append("**recommended**")
+            w(f"| {r['purchases']} | {_money(r['total_cost'], r['currency'])} | {vs} "
+              f"| {r['family']} | {', '.join(marks)} |")
+        chosen = next((r for r in report.purchase_frontier if r.get("recommended")), None)
+        fewest = report.purchase_frontier[0]
+        if chosen is not None and fewest["purchases"] < chosen["purchases"]:
+            n = fewest["purchases"]
+            w("")
+            w(f"Fewest that work: **{n} eSIM{'s' if n != 1 else ''}** for "
+              f"**{_money(fewest['total_cost'], fewest['currency'])}** "
+              f"(+{fewest.get('vs_cheapest_pct') or 0.0:.1f}% vs cheapest) — "
+              + "; ".join(
+                  f"{p['name']} ({_money(p['price'], p['currency'])}: {'+'.join(p['legs'])})"
+                  for p in fewest["plans"]
+              ))
+        w("")
     w("## Recommendation")
     w("")
     rec = report.recommended

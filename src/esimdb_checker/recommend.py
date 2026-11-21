@@ -35,6 +35,11 @@ FAMILY_ORDER = ["local_only", "whole_trip", "hybrid"]
 # windows and say so in the report instead of quietly searching less.
 _MAX_SUBSET_LEGS = 8
 
+# The purchase-count search tries every split of the legs into purchases, which is
+# 3^n states. Past this many legs it keeps only splits into contiguous travel windows
+# and says so in the report, rather than either hanging or quietly answering nothing.
+_MAX_PARTITION_LEGS = 10
+
 
 class RecommendationEngine:
     def __init__(
@@ -48,6 +53,8 @@ class RecommendationEngine:
         speed_verified: bool = False,
         speed_note: str | None = None,
         strict_speed_cap: bool = False,
+        max_purchases: int | None = None,
+        fewer_sims_pct: float | None = None,
     ) -> None:
         self.client = client
         self.data_dir = data_dir
@@ -74,6 +81,12 @@ class RecommendationEngine:
         self._regional_truncated = 0
         self._regional_scope_mode = "exhaustive"
         self._regional_windowed_plans = 0
+        self._partition_search = "exact"
+        # Purchase policy: None keeps the historic behaviour of recommending the cheapest
+        # strategy whatever it costs in eSIMs. max_purchases is a hard limit; fewer_sims
+        # trades price for convenience, up to a tolerance in percent.
+        self.max_purchases = max_purchases
+        self.fewer_sims_pct = fewer_sims_pct
         self.manifests: dict[str, dict[str, Any]] = {}
         self.source_urls: list[str] = []
         self.fetch_status: dict[str, dict[str, Any]] = {}
@@ -91,6 +104,7 @@ class RecommendationEngine:
         self._regional_truncated = 0
         self._regional_scope_mode = "exhaustive"
         self._regional_windowed_plans = 0
+        self._partition_search = "exact"
         self.geo = geo.Geo.load(self.client, self.data_dir, self.use_cache)
         self.fx = fx_mod.fetch_fx(self.client, trip.currency, self.data_dir, self.use_cache)
         self.source_urls.extend([config.countries_endpoint(), config.regions_endpoint()])
@@ -336,82 +350,283 @@ class RecommendationEngine:
             assumptions=_dedupe(assumptions),
         )
 
-    def _evaluate(self, trip: Trip) -> dict[str, Strategy | None]:
-        all_idx = [i for i, _ in self.legs]
-        local_picks: dict[int, tuple[Plan, float, list[str], bool] | None] = {}
-        for i, leg in self.legs:
-            local_picks[i] = self._best_local_plan(leg, trip)
+    # ---- purchase-count frontier ------------------------------------------
+    def _base_cover_costs(
+        self, trip: Trip, local_picks: dict[int, Any]
+    ) -> tuple[dict[int, tuple[float, Any]], dict[int, int], dict[int, int]]:
+        """cheapest plan per *exact* leg set, as a sparse mask -> (cost, plan) map.
 
+        Candidates arrive keyed by the maximal leg set they can serve. Singleton sets
+        come from the per-leg local picks, which is what `local_only` buys, so the
+        frontier's most-expensive row is the same purchase list the old family
+        enumeration produced.
+        """
+        bit = {i: b for b, (i, _) in enumerate(self.legs)}
+        leg_of = {b: i for i, b in bit.items()}
+        base: dict[int, tuple[float, Any]] = {}
+        for cost, plan, scope in self._regional_candidates(trip):
+            m = 0
+            for i in scope:
+                m |= 1 << bit[i]
+            cur = base.get(m)
+            if cur is None or cost < cur[0]:
+                base[m] = (cost, plan)
+        for i, _leg in self.legs:
+            pick = local_picks.get(i)
+            if pick is None:
+                continue
+            plan, cost, _assumptions, _verified = pick
+            m = 1 << bit[i]
+            cur = base.get(m)
+            if cur is None or cost < cur[0]:
+                base[m] = (cost, plan)
+        return base, bit, leg_of
+
+    def _dense_cover(
+        self, base: dict[int, tuple[float, Any]], n: int
+    ) -> tuple[list[float], list[Any]]:
+        """cheapest plan that can serve *at least* a leg set, for every one of 2^n sets.
+
+        A plan bought for a set can serve any subset of it - the data need is a sum over
+        the set so it only shrinks, and activating at the earliest leg of the subset can
+        only leave *more* validity - so the cheapest price for a set is the cheapest price
+        over all of its supersets. That is a superset-min, filled by dynamic programming
+        (n * 2^n steps) instead of re-testing every plan against every set. Only the
+        exact partition search needs the dense form; the contiguous-window fallback reads
+        the sparse map directly, so a long trip never allocates 2^n.
+        """
+        inf = float("inf")
+        size = 1 << n
+        costs = [inf] * size
+        plans: list[Any] = [None] * size
+        for m, (cost, plan) in base.items():
+            if cost < costs[m]:
+                costs[m], plans[m] = cost, plan
+        for b in range(n):
+            for mask in range(size):
+                if mask >> b & 1:
+                    continue
+                up = mask | (1 << b)
+                if costs[up] < costs[mask]:
+                    costs[mask], plans[mask] = costs[up], plans[up]
+        return costs, plans
+
+    def _partition_frontier(
+        self, costs: list[float], plans: list[Any], bit: dict[int, int], leg_of: dict[int, int]
+    ) -> dict[int, list[tuple[int, Any]]]:
+        """Exact cheapest purchase split for each number of eSIMs.
+
+        Every way of splitting the legs into k groups is considered, so a 2-eSIM answer
+        can be two multi-country plans, not one plan plus singles. The lowest leg in a
+        set always forms the first group, which visits each split once instead of k!
+        times: 3^n states overall, which is why the caller caps n.
+        """
+        n = len(self.legs)
+        inf = float("inf")
+        size = 1 << n
+        dp = [[inf] * (n + 1) for _ in range(size)]
+        take = [[-1] * (n + 1) for _ in range(size)]
+        dp[0][0] = 0.0
+        for mask in sorted(range(1, size), key=lambda m: bin(m).count("1")):
+            low = mask & -mask
+            rest = mask ^ low
+            sub = rest
+            while True:
+                group = sub | low
+                cg = costs[group]
+                if cg < inf:
+                    prev = mask ^ group
+                    for k in range(1, n + 1):
+                        pc = dp[prev][k - 1]
+                        if pc == inf:
+                            continue
+                        nc = pc + cg
+                        if nc < dp[mask][k]:
+                            dp[mask][k], take[mask][k] = nc, group
+                if sub == 0:
+                    break
+                sub = (sub - 1) & rest
+        out: dict[int, list[tuple[int, Any]]] = {}
+        all_mask = size - 1
+        for k in range(1, n + 1):
+            if dp[all_mask][k] == inf:
+                continue
+            out[k] = self._rebuild(all_mask, k, dp, take, costs, plans)
+        return out
+
+    def _window_frontier(
+        self, base: dict[int, tuple[float, Any]], bit: dict[int, int], leg_of: dict[int, int]
+    ) -> dict[int, list[tuple[int, Any]]]:
+        """Same frontier restricted to contiguous travel windows.
+
+        Used above the exact ceiling: each purchase then covers one uninterrupted run of
+        legs, which is almost always what a real trip buys (a regional plan for the first
+        fortnight, another for the second half). Cheaper splits that interleave legs are
+        not found, and the report says the restriction applied.
+        """
+        n = len(self.legs)
+        inf = float("inf")
+        order = [i for i, _ in self.legs]
+        wmask: list[list[int]] = [[0] * n for _ in range(n)]
+        for a in range(n):
+            m = 0
+            for b in range(a, n):
+                m |= 1 << bit[order[b]]
+                wmask[a][b] = m
+        # Read the sparse map directly: a plan covers a window when its leg set contains
+        # the window. n^2/2 windows x a few hundred candidate sets, so no 2^n table.
+        costs: dict[int, float] = {}
+        plans: dict[int, Any] = {}
+        for a in range(n):
+            for b in range(a, n):
+                window = wmask[a][b]
+                best_cost, best_plan = inf, None
+                for m, (cost, plan) in base.items():
+                    if (m & window) == window and cost < best_cost:
+                        best_cost, best_plan = cost, plan
+                costs[window], plans[window] = best_cost, best_plan
+        dp = [[[inf] * (n + 1) for _ in range(n)] for _ in range(n)]
+        split: list[list[list[Any]]] = [[[None] * (n + 1) for _ in range(n)] for _ in range(n)]
+        for a in range(n):
+            if costs[wmask[a][a]] < inf:
+                dp[a][a][1] = costs[wmask[a][a]]
+        for length in range(2, n + 1):
+            for a in range(0, n - length + 1):
+                b = a + length - 1
+                if costs[wmask[a][b]] < inf:
+                    dp[a][b][1] = costs[wmask[a][b]]
+                for mid in range(a, b):
+                    for k1 in range(1, n):
+                        if dp[a][mid][k1] == inf:
+                            continue
+                        for k2 in range(1, n + 1 - k1):
+                            if dp[mid + 1][b][k2] == inf:
+                                continue
+                            k = k1 + k2
+                            nc = dp[a][mid][k1] + dp[mid + 1][b][k2]
+                            if nc < dp[a][b][k]:
+                                dp[a][b][k] = nc
+                                split[a][b][k] = (mid, k1, k2)
+        out: dict[int, list[tuple[int, Any]]] = {}
+
+        def collect(a: int, b: int, k: int) -> list[tuple[int, Any]]:
+            if k == 1:
+                return [(wmask[a][b], plans[wmask[a][b]])]
+            mid, k1, k2 = split[a][b][k]
+            return collect(a, mid, k1) + collect(mid + 1, b, k2)
+
+        for k in range(1, n + 1):
+            if dp[0][n - 1][k] < inf:
+                out[k] = collect(0, n - 1, k)
+        return out
+
+    @staticmethod
+    def _rebuild(
+        mask: int,
+        k: int,
+        dp: list[list[float]],
+        take: list[list[int]],
+        costs: list[float],
+        plans: list[Any],
+    ) -> list[tuple[int, Any]]:
+        """Walk the DP's choices back into the groups that were bought."""
+        out: list[tuple[int, Any]] = []
+        while mask:
+            group = take[mask][k]
+            out.append((group, plans[group]))
+            mask ^= group
+            k -= 1
+        return out
+
+    def _strategy_for_split(
+        self, trip: Trip, groups: list[tuple[int, Any]], leg_of: dict[int, int], k: int
+    ) -> Strategy:
+        """Turn (leg-set, plan) groups into a Strategy with the right family label."""
+        n = len(self.legs)
+        plans_out: list[StrategyPlan] = []
+        assumptions: list[str] = []
+        total = 0.0
+        seen: dict[str, int] = {}
+        for group, plan in groups:
+            idxs = sorted(leg_of[b] for b in range(n) if group >> b & 1)
+            s_legs = [self.leg_by_idx[i] for i in idxs]
+            act = min(lg.start_day for lg in s_legs)
+            cost, comparable = plan.price_in(trip.currency, self.fx)
+            assump = self._assumptions_for(plan, s_legs, act, trip)
+            seen[plan.id] = seen.get(plan.id, 0) + 1
+            plans_out.append(
+                StrategyPlan(
+                    plan=plan, legs=tuple(idxs), activation_day=act,
+                    cost=cost, comparable=comparable, assumptions=assump,
+                )
+            )
+            assumptions += assump
+            total += cost
+        repeats = {pid: c for pid, c in seen.items() if c > 1}
+        if repeats:
+            assumptions.append(
+                "this strategy buys the same plan more than once ("
+                + ", ".join(f"{c}x {self.plan_by_id[pid].name}" for pid, c in repeats.items())
+                + ") - those are separate purchases, each with its own activation"
+            )
+        if n == 1:
+            # A one-leg trip has nothing to combine, so the single purchase is the
+            # per-leg pick - the label the report has always used for it.
+            family = "local_only"
+        elif k == 1:
+            family = "whole_trip"
+        elif k == n:
+            family = "local_only"
+        else:
+            family = "hybrid"
+        return self._make_strategy(family, plans_out, total, trip, assumptions)
+
+    def _evaluate(
+        self, trip: Trip, local_picks: dict[int, Any]
+    ) -> tuple[dict[str, Strategy | None], dict[int, Strategy]]:
+        """Cheapest strategy for every number of eSIMs, and the three named families.
+
+        The families are labels over that frontier rather than three searches:
+        `whole_trip` is the 1-purchase row, `local_only` the one-purchase-per-leg row,
+        `hybrid` the cheapest row in between. They used to be found separately, which
+        meant a 2-eSIM answer - the whole reason anyone reads the price of the
+        whole-trip plan - was not something the engine could produce or price.
+        """
+        n = len(self.legs)
+        if n == 0:
+            return ({"local_only": None, "whole_trip": None, "hybrid": None}, {})
+        base, bit, leg_of = self._base_cover_costs(trip, local_picks)
+        if n <= _MAX_PARTITION_LEGS:
+            self._partition_search = "exact"
+            costs, plans = self._dense_cover(base, n)
+            splits = self._partition_frontier(costs, plans, bit, leg_of)
+        else:
+            self._partition_search = "contiguous_windows"
+            splits = self._window_frontier(base, bit, leg_of)
+        per_k = {
+            k: self._strategy_for_split(trip, groups, leg_of, k)
+            for k, groups in splits.items()
+        }
         strategies: dict[str, Strategy | None] = {
             "local_only": None,
             "whole_trip": None,
             "hybrid": None,
         }
+        for strategy in per_k.values():
+            cur = strategies[strategy.family]
+            if cur is None or _less(strategy, cur):
+                strategies[strategy.family] = strategy
+        return strategies, per_k
 
-        # local-only
-        if all(local_picks[i] is not None for i in all_idx):
-            plans: list[StrategyPlan] = []
-            assumptions: list[str] = []
-            total = 0.0
-            for i in all_idx:
-                plan, cost, assump, _ = local_picks[i]
-                plans.append(
-                    StrategyPlan(
-                        plan=plan, legs=(i,), activation_day=self.leg_by_idx[i].start_day,
-                        cost=cost, comparable=True, assumptions=assump,
-                    )
-                )
-                assumptions += assump
-                total += cost
-            strategies["local_only"] = self._make_strategy(
-                "local_only", plans, total, trip, assumptions
-            )
 
-        # whole-trip + hybrid from regional candidates
-        for cost, plan, covered in self._regional_candidates(trip):
-            for S in self._subsets(covered):
-                if not S:
-                    continue
-                act = min(self.leg_by_idx[i].start_day for i in S)
-                s_legs = [self.leg_by_idx[i] for i in S]
-                if not self._data_feasible(plan, s_legs, trip.daily_data_gb):
-                    continue
-                hard_ok, _ = self._validity_info(plan, act, s_legs)
-                if not hard_ok:
-                    continue
-                rest = [i for i in all_idx if i not in S]
-                if any(local_picks[i] is None for i in rest):
-                    continue
-                plans = [
-                    StrategyPlan(
-                        plan=plan, legs=tuple(sorted(S)), activation_day=act,
-                        cost=cost, comparable=True,
-                        assumptions=self._assumptions_for(plan, s_legs, act, trip),
-                    )
-                ]
-                assumptions = list(plans[0].assumptions)
-                total = cost
-                for i in rest:
-                    lplan, lcost, lassump, _ = local_picks[i]
-                    plans.append(
-                        StrategyPlan(
-                            plan=lplan, legs=(i,), activation_day=self.leg_by_idx[i].start_day,
-                            cost=lcost, comparable=True, assumptions=lassump,
-                        )
-                    )
-                    assumptions += lassump
-                    total += lcost
-                family = "whole_trip" if set(S) == set(all_idx) else "hybrid"
-                cand = self._make_strategy(family, plans, total, trip, assumptions)
-                cur = strategies[family]
-                if cur is None or _less(cand, cur):
-                    strategies[family] = cand
-
-        return strategies
 
     # ---- budget -----------------------------------------------------------
     @staticmethod
-    def _budget_status(recommended: Strategy | None, trip: Trip) -> dict[str, Any]:
+    def _budget_status(
+        recommended: Strategy | None,
+        trip: Trip,
+        alternatives: dict[int, float | None] | None = None,
+    ) -> dict[str, Any]:
         budget = trip.budget
         cost = recommended.total_cost if recommended else None
         if budget is None:
@@ -460,11 +675,28 @@ class RecommendationEngine:
             threshold *= 1.1
             steps += 1
         overspend = cost - budget
-        msg = (
-            f"No eSIM strategy meeting your data requirement was found within your "
-            f"original budget of {_money(budget, trip.currency)}. These results are "
-            f"outside your budget cap."
+        # "No strategy fits your budget" is only true if no purchase count fits it. A
+        # purchase policy can rule out the ones that would, and saying "no strategy
+        # exists" then sends the reader off to relax a budget that was never the problem.
+        chosen = recommended.purchase_count if recommended else None
+        fits = sorted(
+            k for k, c in (alternatives or {}).items()
+            if c is not None and k != chosen and c <= budget
         )
+        if fits:
+            alt_k = fits[0]
+            msg = (
+                f"The recommended strategy is outside your budget of "
+                f"{_money(budget, trip.currency)}. A {alt_k}-purchase strategy at "
+                f"{_money(alternatives[alt_k], trip.currency)} would fit - a purchase "
+                f"policy is what ruled it out, not a lack of options."
+            )
+        else:
+            msg = (
+                f"No eSIM strategy meeting your data requirement was found within your "
+                f"original budget of {_money(budget, trip.currency)}. These results are "
+                f"outside your budget cap."
+            )
         return {
             "budget": budget,
             "currency": trip.currency,
@@ -706,24 +938,146 @@ class RecommendationEngine:
             "(check currency/FX availability)"
         )
 
+    # ---- recommendation policy -------------------------------------------
+    def _choose(
+        self, per_k: dict[int, Strategy], trip: Trip
+    ) -> tuple[Strategy | None, dict[str, Any]]:
+        """Pick the recommended strategy under the purchase policy in force.
+
+        Default is unchanged: the cheapest strategy at any purchase count. Two opt-in
+        ways to trade that away: a hard limit on how many eSIMs to buy, or
+        `fewer_sims_pct`, which buys the fewest eSIMs whose total still lands within a
+        tolerance of the cheapest answer - one less QR code is often worth a pound.
+
+        Two orderings are worth stating, because both were gotchas in the first version.
+        The tolerance is always measured against the *unrestricted* cheapest total, even
+        when a purchase limit is also in force: a limit must not silently redefine
+        "cheapest", or the report claims a tolerance the recommendation does not meet.
+        And a budget outranks convenience - `--fewer-sims` says "a little more is fine",
+        `--budget` says "no more than this", so if the cheaper split fits the budget and
+        the convenient one does not, the cheaper split is recommended and the report says
+        the convenience option was dropped for that reason.
+        """
+        feasible = {k: s for k, s in per_k.items() if s.comparable}
+        policy: dict[str, Any] = {
+            "rule": "cheapest",
+            "max_purchases": self.max_purchases,
+            "fewer_sims_pct": self.fewer_sims_pct,
+            "min_feasible_purchases": min(feasible) if feasible else None,
+            "max_purchases_satisfiable": True,
+            "cheapest_purchases": None,
+            "cheapest_cost": None,
+            "tolerance_met": None,
+            "budget_over_convenience": False,
+            "convenience_purchases": None,
+            "convenience_cost": None,
+        }
+        if not feasible:
+            return None, policy
+        cheapest_k = min(feasible, key=lambda k: (feasible[k].total_cost, k))
+        cheapest_cost = feasible[cheapest_k].total_cost
+        policy["cheapest_purchases"] = cheapest_k
+        policy["cheapest_cost"] = cheapest_cost
+
+        pool = feasible
+        if self.max_purchases is not None:
+            pool = {k: s for k, s in feasible.items() if k <= self.max_purchases}
+            if not pool:
+                policy["rule"] = "max_purchases"
+                policy["max_purchases_satisfiable"] = False
+                return None, policy
+
+        if self.fewer_sims_pct is None:
+            k_best = min(pool, key=lambda k: (pool[k].total_cost, k))
+            if k_best != cheapest_k:
+                policy["rule"] = "max_purchases"
+            return feasible[k_best], policy
+
+        allowed = [(k, s) for k, s in pool.items()
+                   if s.total_cost <= cheapest_cost * (1 + self.fewer_sims_pct / 100.0)]
+        if allowed:
+            policy["rule"] = "fewer_purchases"
+            policy["tolerance_met"] = True
+            k_best = min(allowed, key=lambda kv: (kv[0], kv[1].total_cost))[0]
+        else:
+            # The limit made the tolerance unreachable. The limit is the hard constraint,
+            # so honour it and buy the fewest it allows - but say the tolerance was missed.
+            policy["rule"] = "fewest_within_limit"
+            policy["tolerance_met"] = False
+            k_best = min(pool)
+        if (
+            trip.budget is not None
+            and k_best != cheapest_k
+            and cheapest_cost <= trip.budget < feasible[k_best].total_cost
+        ):
+            policy["rule"] = "cheapest"
+            policy["budget_over_convenience"] = True
+            policy["convenience_purchases"] = k_best
+            policy["convenience_cost"] = feasible[k_best].total_cost
+            k_best = cheapest_k
+        return feasible[k_best], policy
+
+    def _frontier_rows(
+        self, per_k: dict[int, Strategy], recommended: Strategy | None, trip: Trip
+    ) -> list[dict[str, Any]]:
+        """One row per feasible purchase count, priced against the cheapest of them."""
+        if not per_k:
+            return []
+        best = min(s.total_cost for s in per_k.values())
+        rows: list[dict[str, Any]] = []
+        for k in sorted(per_k):
+            s = per_k[k]
+            delta = s.total_cost - best
+            rows.append(
+                {
+                    "purchases": k,
+                    "total_cost": _round(s.total_cost),
+                    "buys_same_plan_twice": (
+                        len({sp.plan.id for sp in s.plans}) != len(s.plans)
+                    ),
+                    "currency": trip.currency,
+                    "family": s.family,
+                    "vs_cheapest": _round(delta),
+                    "vs_cheapest_pct": None if best <= 0 else round(delta / best * 100, 1),
+                    "recommended": recommended is not None and s is recommended,
+                    "plans": [
+                        {
+                            "name": sp.plan.name,
+                            "provider": sp.plan.provider,
+                            "price": _round(sp.cost),
+                            "currency": trip.currency,
+                            "legs": [self.leg_by_idx[i].country.name for i in sp.legs],
+                        }
+                        for sp in s.plans
+                    ],
+                }
+            )
+        return rows
+
     # ---- main -------------------------------------------------------------
     def recommend(self, trip: Trip) -> Report:
         assert self.geo is not None, "call load() first"
         local_picks = {i: self._best_local_plan(leg, trip) for i, leg in self.legs}
-        strategies = self._evaluate(trip)
+        strategies, per_k = self._evaluate(trip, local_picks)
         # The recommendation is chosen first: the diagnostics need to know which plans
         # it bought, so that "feasible but not chosen" can be reported instead of lost.
-        feasible = [s for s in strategies.values() if s is not None and s.comparable]
-        recommended: Strategy | None = None
-        if feasible:
-            recommended = min(
-                feasible,
-                key=lambda s: (s.total_cost, s.purchase_count, FAMILY_ORDER.index(s.family)),
-            )
+        recommended, policy = self._choose(per_k, trip)
 
         diag = self._diagnostics(trip, strategies, local_picks, recommended)
         no_solution = self._no_solution_reason(trip, strategies, diag)
-        budget_status = self._budget_status(recommended, trip)
+        if no_solution is None and recommended is None and not policy["max_purchases_satisfiable"]:
+            # Feasible strategies exist; the caller's purchase limit refused them all. That
+            # is still "nothing to recommend", and the report has to say why rather than
+            # fall back to its generic "no feasible strategy" line.
+            limit = self.max_purchases
+            no_solution = (
+                f"no strategy fits the limit of {limit} "
+                f"{'eSIM' if limit == 1 else 'eSIMs'} - the fewest purchases found "
+                f"for this trip is {policy['min_feasible_purchases']}"
+            )
+        budget_status = self._budget_status(
+            recommended, trip, {k: s.total_cost for k, s in per_k.items()}
+        )
 
         # fill plan URLs for every reported strategy
         base_slug = self.legs[0][1].country.slug if self.legs else None
@@ -759,6 +1113,8 @@ class RecommendationEngine:
             "regional_candidates_considered": len(self._regional_candidates(trip)),
             "regional_candidates_truncated": self._regional_truncated,
             "regional_scope_search": self._regional_scope_mode,
+            "partition_search": self._partition_search,
+            "purchase_counts_feasible": sorted(per_k),
             "feasible_families": [k for k in FAMILY_ORDER if strategies[k] is not None],
         }
 
@@ -773,6 +1129,43 @@ class RecommendationEngine:
         ]
         if no_solution:
             notes.insert(0, f"No feasible strategy: {no_solution}.")
+        chosen_k = recommended.purchase_count if recommended is not None else None
+        cheapest_k = policy["cheapest_purchases"]
+        cheapest_cost = policy["cheapest_cost"]
+        if chosen_k is not None and cheapest_k is not None:
+            limit_word = "eSIM" if self.max_purchases == 1 else "eSIMs"
+            if policy["rule"] == "fewer_purchases" and chosen_k != cheapest_k:
+                notes.append(
+                    f"Recommended the fewest eSIMs within {self.fewer_sims_pct:g}% of the "
+                    f"cheapest total: {chosen_k} instead of {cheapest_k} "
+                    f"({_money(cheapest_cost, trip.currency)})."
+                )
+            elif policy["rule"] == "fewest_within_limit":
+                notes.append(
+                    f"Nothing inside the {self.max_purchases}-{limit_word} limit stays "
+                    f"within {self.fewer_sims_pct:g}% of the cheapest total "
+                    f"({_money(cheapest_cost, trip.currency)} at {cheapest_k}); recommended "
+                    f"the fewest the limit allows: {chosen_k} at "
+                    f"{_money(recommended.total_cost, trip.currency)}."
+                )
+            elif self.max_purchases is not None and chosen_k != cheapest_k:
+                notes.append(
+                    f"Limited to at most {self.max_purchases} {limit_word}: "
+                    f"{cheapest_k} would cost {_money(cheapest_cost, trip.currency)} "
+                    f"instead of {_money(recommended.total_cost, trip.currency)}."
+                )
+            if policy["budget_over_convenience"]:
+                notes.append(
+                    f"Skipped the fewer-eSIMs option ({policy['convenience_purchases']} "
+                    f"for {_money(policy['convenience_cost'], trip.currency)}) to stay "
+                    f"within the budget of {_money(trip.budget, trip.currency)}."
+                )
+        if self._partition_search != "exact":
+            notes.append(
+                f"With more than {_MAX_PARTITION_LEGS} legs, the purchase-count search "
+                f"considered splits into contiguous travel windows only, so a cheaper "
+                f"split that interleaves destinations may have been missed."
+            )
         if self._regional_windowed_plans:
             notes.append(
                 f"{self._regional_windowed_plans} plans are listed on more than "
@@ -815,6 +1208,8 @@ class RecommendationEngine:
             recommended=recommended,
             strategies=strategies,
             budget_status=budget_status,
+            purchase_frontier=self._frontier_rows(per_k, recommended, trip),
+            purchase_policy=policy,
             diagnostics=diag,
             totals=totals,
             speed_filter_status=speed_status,

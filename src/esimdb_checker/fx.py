@@ -212,3 +212,22 @@ def fetch_fx(
             note=(f"FX fetch failed ({exc}); plans not natively priced in {currency} "
                   f"are not price-comparable"),
         )
+
+
+def convert_between(
+    amount: float, from_ccy: str, to_ccy: str, fx_from: Fx, fx_to: Fx
+) -> float | None:
+    """Convert between two currencies using USD as the intermediate.
+
+    Each Fx carries one rate (1 USD -> `rate` units of its currency), so leaving a
+    currency means *dividing* by its rate and entering one means *multiplying* by its
+    rate. Returns None when either side is unavailable, which callers must surface
+    rather than assume a rate for.
+    """
+    if not from_ccy or not to_ccy:
+        return None
+    if from_ccy.upper() == to_ccy.upper():
+        return amount
+    if not (fx_from.available and fx_from.rate and fx_to.available and fx_to.rate):
+        return None
+    return amount / fx_from.rate * fx_to.rate

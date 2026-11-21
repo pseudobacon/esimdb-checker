@@ -11,6 +11,7 @@ cover.
 from __future__ import annotations
 
 import httpx
+import pytest
 import respx
 from conftest import (
     build_plan_entry,
@@ -23,7 +24,8 @@ from conftest import (
 
 from esimdb_checker.itinerary import build_trip
 from esimdb_checker.models import Country
-from esimdb_checker.recommend import RecommendationEngine
+from esimdb_checker.recommend import _MAX_PARTITION_LEGS, RecommendationEngine
+from esimdb_checker.report import render_console
 
 ES = Country(code="ES", name="Spain", slug="spain", region="europe")
 FR = Country(code="FR", name="France", slug="france", region="europe")
@@ -343,6 +345,11 @@ def test_one_plan_can_cover_two_visits_to_the_same_country(tmp_path):
     assert shared and shared[0].legs == (0, 2)
     assert rep.recommended is not None and rep.recommended.total_cost == 10.0
     assert rep.strategies["local_only"].total_cost == 16.0  # the same plan bought twice
+    # Buying two copies of one SKU is legal, so the ladder keeps that row - but it says
+    # so, rather than leaving a reader to notice the same eSIM listed twice.
+    rows = _rows(rep)
+    assert rows[3]["buys_same_plan_twice"] is True
+    assert rows[2]["buys_same_plan_twice"] is False
 
 
 def test_calendar_only_multi_country_misses_are_named(tmp_path):
@@ -421,3 +428,214 @@ def test_wide_trips_search_windows_and_say_so(tmp_path):
     hy = rep.strategies["hybrid"]
     assert hy is not None
     assert any(sp.plan.id == "eu-60-40" and len(sp.legs) >= 2 for sp in hy.plans)
+
+
+# ---------------------------------------------------------------------------
+# Cost of convenience: the cheapest strategy for each number of eSIMs.
+#
+# The families used to be three separate searches, which meant the engine could
+# price "one plan for everything" and "one plan per destination" but had no way to
+# say what two plans would cost - the question people actually ask when a whole-trip
+# plan looks expensive. The frontier prices every purchase count, and the two
+# policies below act on it.
+
+
+TH = Country(code="TH", name="Thailand", slug="thailand", region="asia")
+
+
+def _frontier_payloads():
+    """One world plan (3 legs), a Europe plan (2 legs), and a local pick per leg."""
+    glob = entry("glob-60", A, "World 60GB/60Days", 60000, 60, 30.0)
+    reg = entry("eu-15", B, "Europe 15GB/30Days", 15000, 30, 11.0)
+    es = entry("es-6", B, "Spain 6GB/30Days", 6000, 30, 5.0)
+    fr = entry("fr-6", B, "France 6GB/30Days", 6000, 30, 5.0)
+    jp = entry("jp-6", J, "Japan 6GB/30Days", 6000, 30, 5.0)
+    return [
+        ("spain", build_plans_payload([glob, reg, es])),
+        ("france", build_plans_payload([glob, reg, fr])),
+        ("japan", build_plans_payload([glob, jp])),
+    ]
+
+
+def _rows(rep):
+    return {r["purchases"]: r for r in rep.purchase_frontier}
+
+
+def test_frontier_prices_every_number_of_esims(tmp_path):
+    trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)])
+    rep = _run(tmp_path, _frontier_payloads(), trip)
+    rows = _rows(rep)
+    assert sorted(rows) == [1, 2, 3]
+    assert rows[1]["total_cost"] == pytest.approx(30.0)
+    assert rows[1]["family"] == "whole_trip"
+    assert rows[2]["total_cost"] == pytest.approx(16.0)
+    assert rows[2]["family"] == "hybrid"
+    assert len(rows[2]["plans"]) == 2
+    assert rows[3]["total_cost"] == pytest.approx(15.0)
+    assert rows[3]["family"] == "local_only"
+    # Priced against the cheapest rung, and the cheapest rung is what gets recommended.
+    assert rows[3]["vs_cheapest_pct"] == 0.0
+    assert rows[2]["vs_cheapest_pct"] == pytest.approx(6.7)
+    assert rows[3]["recommended"] is True
+    assert rows[1]["recommended"] is False
+    assert "Cost of convenience" in render_console(rep)
+
+
+def test_frontier_endpoints_are_the_named_families(tmp_path):
+    trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)])
+    rep = _run(tmp_path, _frontier_payloads(), trip)
+    rows = _rows(rep)
+    assert rows[1]["total_cost"] == pytest.approx(rep.strategies["whole_trip"].total_cost)
+    assert rows[3]["total_cost"] == pytest.approx(rep.strategies["local_only"].total_cost)
+    assert rows[2]["total_cost"] == pytest.approx(rep.strategies["hybrid"].total_cost)
+
+
+def test_two_multi_country_plans_form_one_purchase_count(tmp_path):
+    # No plan covers all four legs, and the cheap answer is *two* regional plans - a
+    # shape the old single-regional-plan hybrid could not build at any price.
+    trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0), (TH, 5, 0)])
+    eu = entry("eu-pair", A, "Europe pair 20GB/20Days", 20000, 20, 8.0)
+    asia = entry("as-pair", J, "Asia pair 20GB/20Days", 20000, 20, 8.0)
+    singles = {
+        "spain": entry("es-2", B, "Spain 6GB/30Days", 6000, 30, 2.0),
+        "france": entry("fr-2", B, "France 6GB/30Days", 6000, 30, 2.0),
+        "japan": entry("jp-2", B, "Japan 6GB/30Days", 6000, 30, 2.0),
+        "thailand": entry("th-2", B, "Thailand 6GB/30Days", 6000, 30, 2.0),
+    }
+    payloads = [
+        ("spain", build_plans_payload([eu, singles["spain"]])),
+        ("france", build_plans_payload([eu, singles["france"]])),
+        ("japan", build_plans_payload([asia, singles["japan"]])),
+        ("thailand", build_plans_payload([asia, singles["thailand"]])),
+    ]
+    rep = _run(tmp_path, payloads, trip)
+    rows = _rows(rep)
+    assert 1 not in rows
+    assert rep.strategies["whole_trip"] is None
+    assert rows[2]["total_cost"] == pytest.approx(16.0)
+    assert sorted(len(p["legs"]) for p in rows[2]["plans"]) == [2, 2]
+    # Four single-destination plans are still cheaper, and stay the default.
+    assert rows[4]["total_cost"] == pytest.approx(8.0)
+    assert rep.recommended.purchase_count == 4
+
+    limited = _run(tmp_path, payloads, trip, max_purchases=2)
+    assert limited.recommended.purchase_count == 2
+    assert limited.recommended.total_cost == pytest.approx(16.0)
+    assert "at most 2 eSIMs" in " ".join(limited.notes)
+    assert "Cost of convenience" in render_console(limited)
+
+
+def test_purchase_limit_that_nothing_fits_recommends_nothing(tmp_path):
+    trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0), (TH, 5, 0)])
+    eu = entry("eu-pair", A, "Europe pair 20GB/20Days", 20000, 20, 8.0)
+    asia = entry("as-pair", J, "Asia pair 20GB/20Days", 20000, 20, 8.0)
+    payloads = [
+        ("spain", build_plans_payload([eu, entry("es-2", B, "Spain 6GB", 6000, 30, 2.0)])),
+        ("france", build_plans_payload([eu, entry("fr-2", B, "France 6GB", 6000, 30, 2.0)])),
+        ("japan", build_plans_payload([asia, entry("jp-2", B, "Japan 6GB", 6000, 30, 2.0)])),
+        ("thailand", build_plans_payload([asia, entry("th-2", B, "Thailand 6GB", 6000, 30, 2.0)])),
+    ]
+    rep = _run(tmp_path, payloads, trip, max_purchases=1)
+    assert rep.recommended is None
+    # Strategies exist; the limit refused them. The report must say so, not just go quiet.
+    # ("found", not "possible": above the ceiling the split search is restricted.)
+    assert "fewest purchases found" in " ".join(rep.notes)
+    assert rep.purchase_policy["min_feasible_purchases"] == 2
+    assert "fewest purchases found" in render_console(rep)
+
+
+def test_fewer_sims_buys_convenience_within_a_tolerance(tmp_path):
+    trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)])
+    payloads = _frontier_payloads()
+    # 2 eSIMs costs 6.7% more than 3, so a 10% tolerance takes it...
+    loose = _run(tmp_path, payloads, trip, fewer_sims_pct=10)
+    assert loose.recommended.purchase_count == 2
+    assert loose.recommended.total_cost == pytest.approx(16.0)
+    assert loose.purchase_policy["rule"] == "fewer_purchases"
+    assert "fewest eSIMs within 10%" in " ".join(loose.notes)
+    assert "fewest eSIMs within 10% of the cheapest total" in render_console(loose)
+    # ...and a 5% tolerance does not. One eSIM is 100% more, so it never wins here.
+    tight = _run(tmp_path, payloads, trip, fewer_sims_pct=5)
+    assert tight.recommended.purchase_count == 3
+
+
+def test_frontier_falls_back_to_contiguous_travel_windows(tmp_path):
+    n = _MAX_PARTITION_LEGS + 1
+    countries = [
+        Country(code=f"C{i}", name=f"Country{i}", slug=f"country{i}", region="asia")
+        for i in range(n)
+    ]
+    trip = _trip([(c, 2, 0) for c in countries])
+    glob = entry("glob", A, "World 60GB/60Days", 500000, 400, 50.0)
+    payloads = [
+        (c.slug, build_plans_payload([glob, entry(f"l{i}", B, f"{c.name} 6GB", 6000, 30, 2.0)]))
+        for i, c in enumerate(countries)
+    ]
+    rep = _run(tmp_path, payloads, trip)
+    assert len(rep.trip.legs) == n
+    assert rep.totals["partition_search"] == "contiguous_windows"
+    assert "contiguous travel windows" in " ".join(rep.notes)
+    rows = _rows(rep)
+    # The one-plan answer is a contiguous window trivially, so it survives the fallback.
+    assert rows[1]["total_cost"] == pytest.approx(50.0)
+    assert rows[n]["total_cost"] == pytest.approx(2.0 * n)
+
+
+def test_a_limit_does_not_redefine_what_the_tolerance_is_measured_against(tmp_path):
+    # `--fewer-sims` promises "within PCT% of the cheapest". Measuring that against the
+    # cheapest *inside the limit* lets --max-purchases 1 claim a 10% tolerance while
+    # recommending 44% more. The floor is always the unrestricted cheapest.
+    trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)])
+    rep = _run(tmp_path, _frontier_payloads(), trip, fewer_sims_pct=10, max_purchases=1)
+    assert rep.recommended.purchase_count == 1
+    assert rep.purchase_policy["rule"] == "fewest_within_limit"
+    assert rep.purchase_policy["tolerance_met"] is False
+    assert rep.purchase_policy["cheapest_cost"] == pytest.approx(15.0)
+    text = render_console(rep)
+    assert "fewest eSIMs the 1-eSIM limit allows" in text
+    assert "Nothing inside the 1-eSIM limit stays within 10%" in " ".join(rep.notes)
+    assert "fewest eSIMs within 10% of the cheapest total" not in text
+
+
+def test_tolerance_choosing_the_cheapest_split_prints_no_vacuous_note(tmp_path):
+    # Whole-trip is both the cheapest and the fewest here, so the old code printed
+    # "the fewest eSIMs ...: 1 instead of 1".
+    trip = _trip([(ES, 5, 0), (FR, 5, 0)])
+    glob = entry("glob-20", A, "World 20GB/30Days", 20000, 30, 8.0)
+    es = entry("es-6", B, "Spain 6GB/30Days", 6000, 30, 5.0)
+    fr = entry("fr-6", B, "France 6GB/30Days", 6000, 30, 5.0)
+    payloads = [
+        ("spain", build_plans_payload([glob, es])),
+        ("france", build_plans_payload([glob, fr])),
+    ]
+    rep = _run(tmp_path, payloads, trip, fewer_sims_pct=30)
+    assert rep.recommended.purchase_count == 1
+    joined = " ".join(rep.notes)
+    assert "instead of 1" not in joined
+    assert "fewest eSIMs within 30%" not in joined
+
+
+def test_a_budget_outranks_the_convenience_option(tmp_path):
+    # --fewer-sims says "a little more is fine"; --budget says "no more than this".
+    # When the convenient split busts the budget and the cheap one does not, the cheap
+    # one is recommended - and the budget line stays the truth.
+    payloads = _frontier_payloads()
+    rep = _run(tmp_path, payloads, _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)], budget=15.5),
+               fewer_sims_pct=10)
+    assert rep.recommended.purchase_count == 3  # the 2-eSIM split costs 16.00
+    assert rep.purchase_policy["budget_over_convenience"] is True
+    assert rep.budget_status["within_original"] is True
+    assert "Skipped the fewer-eSIMs option" in " ".join(rep.notes)
+
+    # A hard limit is not negotiable, so it can recommend over budget - but the budget
+    # line must say which purchase count would have fitted, not "nothing exists".
+    limited = _run(tmp_path, payloads, _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)], budget=15.5),
+                   max_purchases=2)
+    assert limited.recommended.purchase_count == 2
+    msg = limited.budget_status["message"]
+    assert "3-purchase strategy" in msg and "ruled it out" in msg
+
+    # And when genuinely nothing fits, the original wording stays.
+    broke = _run(tmp_path, payloads, _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)], budget=14.0))
+    assert "would fit" not in broke.budget_status["message"]
+    assert "No eSIM strategy meeting your data requirement" in broke.budget_status["message"]

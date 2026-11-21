@@ -17,16 +17,28 @@ day counts, data need, validity and budget. Research only — it never buys or a
 | --- | --- |
 | Package | `esimdb-checker` 0.1.0, `src/` layout, Python 3.10+, console script `esimdb-checker` |
 | Runtime deps | `httpx`, `textual` — **no browser, no Playwright at runtime** |
-| Tests | **179 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
+| Tests | **192 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
 | Lint | `ruff check .` **clean, exit 0**. Pre-existing debt (174 findings at the baseline commit) swept in two passes — see DEVELOPMENT-LOG. |
 | Type check | none configured (`mypy` not installed, no config) |
 | CI | none |
 | Publishing | Published at `https://github.com/pseudobacon/esimdb-checker` — **public** (chosen deliberately), default branch `main`, `origin` points there |
 
-## Checks that were actually run (2026-11-21)
+## Checks that were actually run (2026-11-22, re-run after review)
 
 ```
-python -m pytest tests/ -p no:cacheprovider   -> 179 passed in 80.71s
+python -m pytest tests/ -p no:cacheprovider   -> 192 passed in 82.57s
+python -m ruff check .                        -> All checks passed (exit 0)
+esimdb-checker recommend --itinerary asia-2026.itinerary.json
+     -> Cost of convenience: 1 £24.69 / 2 £18.63 / 3 £17.19 / 4 £17.21 / 5 £17.12 / 6 £18.70
+esimdb-checker recommend … --fewer-sims        -> 2 eSIMs £18.63 (10% tolerance)
+esimdb-checker recommend … --max-purchases 2   -> 2 eSIMs; --max-purchases 1 -> nothing recommended
+esimdb-checker recommend … --fewer-sims 3 --max-purchases 4 -> 3 eSIMs, both notes shown
+esimdb-checker recommend … --fewer-sims 10 --max-purchases 1 -> rule fewest_within_limit,
+     tolerance_met false, header "fewest eSIMs the 1-eSIM limit allows" (no false 10% claim)
+esimdb-checker recommend … --budget 18         -> budget £18.00 respected (this path used to crash)
+esimdb-checker recommend … --budget 17.5 --max-purchases 2
+     -> "A 3-purchase strategy at £17.19 would fit - a purchase policy is what ruled it out"
+esimdb-checker recommend … --budget 18 --fewer-sims -> 5 purchases: the 2-eSIM split busts £18
 python -m ruff check .                        -> All checks passed (exit 0)
 esimdb-checker recommend --itinerary …        -> console, --json, --md, --strict-speed-cap, --include-capped
 pty-driven wizard walkthrough                 -> see README "Verified in a terminal"
@@ -36,7 +48,8 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
 
 - `src/esimdb_checker/cli.py` — argparse surface; `recommend`, `recommend-wizard`, `plans`,
   `countries`, `resolve`, `fetch`. Shared engine flags in `_add_engine_args`.
-- `recommend.py` — acquisition, candidate generation, the three families, diagnostics, totals.
+- `recommend.py` — acquisition, candidate generation, the purchase-count frontier
+  (`_cover_costs` → `_partition_frontier`), policies (`_choose`), diagnostics, totals.
 - `filters.py` — `speed_cap_signals` (always-throttled vs after-allowance), `purchasable`,
   `meets_data_need_for_days`.
 - `wizard.py` — Textual TUI + `--plain` fallback; both build the same `Trip`.
@@ -68,9 +81,27 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
    plan too short for the whole trip can still serve a window of it. Rejected multi-leg
    plans are explained by `regional_near_matches` / `regional_alternatives` rather than
    vanishing. See DEVELOPMENT-LOG 2026-11-21.
-8. **Provenance is part of the output.** Snapshots, SHA-256, fetch times and the FX rate are in
+8. **The families are labels over one search, not three searches.** The engine prices every
+   purchase count (1 eSIM … one per leg) and calls k=1 `whole_trip`, k=legs `local_only`, the
+   rest `hybrid`. They used to be enumerated separately, which meant a 2-eSIM answer was
+   unpriceable and often unfindable — the search bought at most one multi-country plan. Cheapest
+   stays the default recommendation; `--max-purchases` (hard limit) and `--fewer-sims [PCT]`
+   (fewest within a tolerance, default 10%) are opt-in, and a limit nothing fits recommends
+   nothing rather than quietly exceeding it. A split may buy the same SKU twice; that is legal
+   and says so in the assumptions. See DEVELOPMENT-LOG 2026-11-22.
+9. **Provenance is part of the output.** Snapshots, SHA-256, fetch times and the FX rate are in
    every report; `speed_filter_status.mode` always states `local_predicate` vs
    `verified_site_toggle` honestly.
+10. **The convenience tolerance and the budget have a stated order of precedence.** `--fewer-sims`
+    measures its tolerance against the *unrestricted* cheapest total even when `--max-purchases`
+    binds — if nothing inside the limit is within tolerance, the rule becomes `fewest_within_limit`
+    and the report says so instead of claiming a percentage it missed. A budget outranks
+    convenience (a convenient split that busts it is not bought) but a hard `--max-purchases` does
+    not, so an over-budget recommendation under a limit is allowed and the budget line names the
+    purchase count that *would* have fitted rather than claiming nothing exists. Every row of the
+    ladder is also priced with the same currency clock (`vs_cheapest_pct` is null, not zero, when
+    no floor exists), and the contiguous-window fallback says "fewest purchases found" because
+    above 10 legs it does not search every split. Fixed after review; see DEVELOPMENT-LOG 2026-11-22.
 
 ## Known debt / open items
 
@@ -85,10 +116,13 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
   file together; do not re-add the field on its own.
 - `itinerary.py` currency list and the wizard's currency list should not be able to drift; they
   are shared today but only by import.
-- `local_only` has no cross-leg dedupe: `_best_local_plan` can pick the *same* multi-country
-   plan once per leg (seen in a synthetic fixture: one plan bought three times). Buying two
-   copies of an SKU is legal, so this was left as-is, but it makes `purchase_count` and the
-   "one plan per destination" label weaker than they read. Untested either way.
+- No cross-leg dedupe of identical SKUs: a strategy can buy the *same* multi-country plan
+   once per leg (seen in a synthetic fixture: one plan bought three times; the `local_only`
+   row and the frontier's `k = legs` row both do it). Buying two copies of an SKU is legal,
+   so the search allows it, `_strategy_for_split` states it in the strategy's assumptions, and
+   the ladder row is marked `buys one plan twice` (`buys_same_plan_twice` in `--json`) instead of
+   leaving it silent. Whether the recommendation should *prefer* one copy over two — which needs
+   SKU identity inside the partition DP, not just disclosure — is still open and untested.
 - No CI, no packaging release flow, no screenshots/GIF in the README.
 
 ## Do not publish (ignored by design)

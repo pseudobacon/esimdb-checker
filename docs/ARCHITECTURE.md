@@ -221,15 +221,53 @@ trip was 12,562, and `totals.speed_cap_excluded` repeated the same truncated num
 
 ## 4. Recommendation rules
 
-The engine builds three independent strategy families from the acquired plans and
-recommends the **cheapest feasible** one (ranked in the requested currency):
+The engine prices **every number of eSIMs** — the cheapest split of the trip's legs into
+1 purchase, 2 purchases, … up to one per leg — and recommends the **cheapest feasible**
+row (ranked in the requested currency). The three families the report shows are labels
+over that ladder, not separate searches:
 
-- **local-only** — the cheapest data-feasible, valid plan for each leg.
-- **whole-trip** — a single plan listed on *every* leg's destination page (the
+- **whole-trip** (`k = 1`) — a single plan listed on *every* leg's destination page (the
   intersection), activated once, covering all legs.
-- **hybrid** — one multi-leg plan serving a subset of legs plus per-destination local
-  plans for the rest. A leg set needs >= 2 **legs**, not >= 2 countries: a trip that
-  passes through the same country twice can serve both visits with one longer plan.
+- **hybrid** (`1 < k < legs`) — any other split. It is no longer restricted to one
+  multi-country plan plus singles: two regional plans covering different halves of a
+  trip is a legitimate 2-eSIM answer, and pricing it is the whole point of the ladder.
+- **local-only** (`k = legs`) — the cheapest data-feasible, valid plan for each leg.
+
+A leg set needs >= 2 **legs**, not >= 2 countries: a trip that passes through the same
+country twice can serve both visits with one longer plan.
+
+The ladder is what makes the price of convenience visible. On a 32-day, four-country
+trip it reads 1 eSIM £24.69 / 2 £18.63 / 3 £17.19 / 4 £17.21 / 5 £17.12 / 6 £18.70 —
+so "two eSIMs instead of five" is £1.51, which no three-family table could say. Two
+opt-in policies act on it, both off by default so the recommendation stays purely
+cheapest:
+
+- `--max-purchases N` — hard limit. Recommends the cheapest strategy buying at most N
+  eSIMs. If nothing fits, nothing is recommended and the report names the fewest
+  purchases that do work (`purchase_policy.max_purchases_satisfiable`).
+- `--fewer-sims [PCT]` — buys the fewest eSIMs whose total stays within PCT% (default
+  10) of the cheapest answer. Absolute fewest is *not* the goal: on the trip above the
+  1-eSIM option is 44% dearer and correctly loses. The percentage is always measured
+  against the *unrestricted* cheapest, even when a limit binds — otherwise `--max-purchases 1`
+  would move the goalposts and call +44% "within 10%". When nothing inside a limit clears the
+  tolerance the rule becomes `fewest_within_limit` and says so.
+
+Precedence when the policies disagree: a **budget outranks convenience** (a split that busts the
+budget is not bought just to save a QR code, and the budget line stays truthful), a **hard
+`--max-purchases` outranks a budget** (the limit is why the flag exists; an over-budget result
+under a limit names the purchase count that would have fitted), and the **coverage gate outranks
+everything** (a plan not listed on a leg's page cannot serve it at any price).
+
+Implementation (`_base_cover_costs` → `_dense_cover` → `_partition_frontier` →
+`_strategy_for_split`): cheapest price per *exact* leg set as a sparse mask map, then — only for
+the exact search — a superset-min over all 2^n sets (a plan proven to serve a set serves any
+subset: the data need only shrinks, and activating at the earliest leg of the subset can only
+leave more validity), then a DP over set partitions with an exact purchase count, taking the
+lowest leg of each set as the first group so each split is visited once (3^n states). Above
+`_MAX_PARTITION_LEGS` legs it restricts splits to contiguous travel windows, reading the sparse
+map directly so no 2^n table is built, and says so (`totals.partition_search`). A split that buys
+the same SKU twice is allowed — two copies of a plan are two legal purchases — and says so both in
+the strategy's assumptions and on its frontier row (`buys_same_plan_twice`).
 
 Feasibility rules:
 - **Coverage gate (authoritative):** a plan covers a leg only if its id is listed on
