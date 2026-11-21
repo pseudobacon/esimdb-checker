@@ -195,6 +195,9 @@ trip was 12,562, and `totals.speed_cap_excluded` repeated the same truncated num
 - **Trip** — the per-destination itinerary: `legs` (ordered), `total_days` (charged days),
   `required_gb`, `daily_data_gb`, `currency`, `budget` (None = no budget), `start_date`,
   `end_date`; `.distinct_countries` is the ordered unique destination set.
+  `total_days` sums **charged** days only; `.span_days` is the calendar length
+  (charged + transfer days) and is what the report prints as the travel-day range,
+  because a plan's validity has to survive the calendar rather than the charge.
 - **Fx** — the converted rate: `available`, `currency`, `rate` (1 USD → rate units),
   `source` (`frankfurter`/`fallback`), `fetched_at`, `date`, `stale`, `note`;
   `convert(amount_usd)`.
@@ -212,7 +215,9 @@ trip was 12,562, and `totals.speed_cap_excluded` repeated the same truncated num
   `budget_status`, `diagnostics` (excluded_always_throttled,
   excluded_always_throttled_total, after_cap_admitted, after_cap_excluded_strict,
   data_insufficient_filtered, unpurchasable_excluded, near_matches, unservable_legs,
-  fetch_failed_slugs), `totals`, `speed_filter_status`, `notes`.
+  regional_near_matches, regional_alternatives, fetch_failed_slugs), `totals`,
+  `speed_filter_status`, `notes`. Each list is capped for display and carries a
+  `*_total` alongside it.
 
 ## 4. Recommendation rules
 
@@ -222,8 +227,9 @@ recommends the **cheapest feasible** one (ranked in the requested currency):
 - **local-only** — the cheapest data-feasible, valid plan for each leg.
 - **whole-trip** — a single plan listed on *every* leg's destination page (the
   intersection), activated once, covering all legs.
-- **hybrid** — one regional plan serving a subset of legs (>= 2 destinations) plus
-  per-destination local plans for the rest.
+- **hybrid** — one multi-leg plan serving a subset of legs plus per-destination local
+  plans for the rest. A leg set needs >= 2 **legs**, not >= 2 countries: a trip that
+  passes through the same country twice can serve both visits with one longer plan.
 
 Feasibility rules:
 - **Coverage gate (authoritative):** a plan covers a leg only if its id is listed on
@@ -249,9 +255,27 @@ Feasibility rules:
   not expire before the last of those legs ends. Unknown validity (`period_days == 0`)
   is flagged, never blocked. A data-feasible plan that is too short is surfaced as a
   near-match, not silently dropped.
-- **Dedup (cheapest valid per scope):** for regional plans, only the cheapest
-  data-feasible, valid plan per coverage scope is kept — so a cheap plan that expires
-  mid-trip is pruned in favour of the pricier plan that actually lasts.
+- **Dedup (cheapest per servable leg set):** for multi-leg plans, the leg set a plan is
+  *listed on* is not the leg set it can *serve*. Feasibility is judged per leg set the
+  plan would actually buy for, and that leg set is the dedupe key, so a plan that fails
+  the full set is still tried against the windows of the trip it does cover (a 30-day
+  50 GB plan on a 32-day, four-destination trip). Only maximal servable sets are kept —
+  widening a set only raises its data need and lengthens the span validity must reach,
+  so every servable set sits under a maximal one, and `_evaluate` re-prices the subsets
+  at the same cost. A cheap plan that serves nothing is therefore pruned in favour of
+  the pricier plan that lasts, as before.
+  Above `_MAX_SUBSET_LEGS` legs the set search narrows to contiguous travel windows and
+  the report says so (`totals.regional_scope_search`); dropped sets are counted
+  (`totals.regional_candidates_truncated`), never silently cut.
+- **What was ruled out, and why:** two diagnostics buckets answer "why is plan X not an
+  option" for multi-leg plans. `regional_near_matches` holds plans listed on >= 2
+  *different countries* with enough data for everything they are listed on but too short
+  for the calendar, sorted by how many days they fall short (`legs_run_to_day`,
+  `short_by_days`). `regional_alternatives` holds plans that **are** feasible for some
+  leg set but were not bought by any family's winning strategy — usually a pricier
+  whole-trip option, or one covering a different window. Same-country visit pairs are
+  excluded from the first bucket (a plan too short for both visits is still fine for one,
+  and per-leg picks already price it).
 
 **Budget gate:** with `--budget`, the recommended strategy is compared against the budget;
 `budget_status` reports `within_original` and, if over, the compound 10% steps to relax

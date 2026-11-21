@@ -5,6 +5,69 @@ the current-state snapshot is in [HANDOFF.md](HANDOFF.md).
 
 ---
 
+## 2026-11-21 — Multi-leg plans were invisible: candidate generation fixed
+
+Reported against a real 32-day, four-country itinerary (Taiwan → Indonesia → Thailand →
+China, back to Taiwan, back to China): the report recommended five single-destination
+plans and never mentioned *Simvito Asia (12 destinations) 50 GB / 30 days* at £18.94, which
+is a viable purchase for most of that trip. It was not ranked lower — it was never a
+candidate at all.
+
+Three separate causes, all in the multi-leg candidate pass (`_regional_candidates`):
+
+1. **A plan was only tried against the set of legs it is listed on.** A plan listed on all
+   four destination pages had to be data-feasible *and* valid for all four. A 30-day plan on
+   a 32-day trip fails that by two days, so it was deleted before the subset enumeration in
+   `_evaluate` could find the 24-day window it does serve. Feasibility is now judged per leg
+   set the plan would actually be bought for, and that leg set (`frozenset`) is the dedupe
+   key; `_servable_scopes` keeps only the *maximal* servable sets — widening a set only
+   raises the data need and lengthens the span validity must reach, so every servable set
+   sits under a maximal one, and the existing subset re-pricing in `_evaluate` covers the
+   rest for free.
+2. **Repeat visits were excluded outright** (`distinct countries >= 2`). The trip visits
+   Taiwan twice and China twice, so it bought two China plans where one 7-day plan covers
+   both stays (China legs are travel days 26-29 and 31-32). A leg set now needs >= 2 *legs*.
+3. **The travel-day range ignored transfer days.** `total_days` sums charged days, and the
+   report printed `1–{total_days}` — "31 travel day(s)" for a trip whose last leg runs to
+   day 32. `Trip.span_days` (charged + transfer) is what the console header, the leg table
+   and the Markdown table now print; `total_days` keeps its meaning and is labelled
+   "charged". JSON gains `span_days` alongside `total_days`.
+
+Visibility also improved, because "why wasn't X suggested?" was unanswerable: two new
+diagnostic buckets in `_diagnostics` (console, JSON and Markdown share
+`_diagnostics_lines`) — `regional_near_matches` (listed on >= 2 *different* countries,
+Enough data, too short for the calendar; `legs_run_to_day` + `short_by_days`, sorted
+shortest shortfall first) and `regional_alternatives` (feasible for some leg set but not
+bought by any winning strategy; sorted most-legs-first then price). Same-country pairs are
+deliberately out of the near-match bucket: a plan too short for both visits is still fine
+for one, and per-leg picks already price it.
+
+Measured on the same itinerary file, old code stashed and re-run (`asia-2026.itinerary.json`,
+31 charged days over 32, 46.5 GB, GBP, cache warm):
+
+```
+before   header "31 travel day(s)"  local_only £18.70 (6) RECOMMENDED
+         whole_trip £24.69 (1)      hybrid £19.56 (5)
+         Simvito Asia 50GB/30d: 0 mentions anywhere in the report
+after    header "31 charged day(s) over 32 travel day(s)", leg table 1–32
+         local_only £18.70 (6)  whole_trip £24.69 (1)  hybrid £17.12 (5) RECOMMENDED
+         one China plan serves both China stays; saves £1.58 vs local_only
+         Simvito Asia 50GB/30d £18.93 first in regional_alternatives, with the legs it
+         would cover: Taiwan+Indonesia+Thailand+China+Taiwan (days 2-30) and
+         Indonesia+Thailand+China+Taiwan+China (days 6-32)
+         diagnostics: 3,170 multi-country calendar misses, 47 multi-leg alternatives
+```
+
+Six tests added (`tests/test_recommend.py`): the 30-days-on-a-32-day-trip window, one plan
+serving two visits to the same country, a calendar-only multi-country miss being named, a
+feasible-but-not-bought multi-leg plan still being listed, the transfer-day span in the
+rendered report, and a 10-leg trip taking (and disclosing) the contiguous-window search.
+`pytest` 179 passed in 80.71s, `ruff check .` clean, offline. A run against the warm
+cache is ~3s (was ~3s before); `regional_candidates_considered` is now one plan per leg set
+(49 here) with `regional_candidates_truncated: 0`.
+
+---
+
 ## 2026-11-21 — Published to GitHub
 
 Repository: **https://github.com/pseudobacon/esimdb-checker** — owner `pseudobacon` (the

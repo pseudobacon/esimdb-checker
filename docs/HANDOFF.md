@@ -17,7 +17,7 @@ day counts, data need, validity and budget. Research only — it never buys or a
 | --- | --- |
 | Package | `esimdb-checker` 0.1.0, `src/` layout, Python 3.10+, console script `esimdb-checker` |
 | Runtime deps | `httpx`, `textual` — **no browser, no Playwright at runtime** |
-| Tests | **173 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
+| Tests | **179 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
 | Lint | `ruff check .` **clean, exit 0**. Pre-existing debt (174 findings at the baseline commit) swept in two passes — see DEVELOPMENT-LOG. |
 | Type check | none configured (`mypy` not installed, no config) |
 | CI | none |
@@ -26,7 +26,7 @@ day counts, data need, validity and budget. Research only — it never buys or a
 ## Checks that were actually run (2026-11-21)
 
 ```
-python -m pytest tests/ -p no:cacheprovider   -> 173 passed in 88.55s
+python -m pytest tests/ -p no:cacheprovider   -> 179 passed in 80.71s
 python -m ruff check .                        -> All checks passed (exit 0)
 esimdb-checker recommend --itinerary …        -> console, --json, --md, --strict-speed-cap, --include-capped
 pty-driven wizard walkthrough                 -> see README "Verified in a terminal"
@@ -61,7 +61,14 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
    `*_total` keys carry the real figures. Two truncation bugs of this class were found and fixed.
 5. **The wizard is keyboard-only.** No buttons, no mouse capture (verified: no mouse-tracking
    sequence in the byte stream), so native terminal copy still works.
-6. **Provenance is part of the output.** Snapshots, SHA-256, fetch times and the FX rate are in
+7. **A plan's page set is not its servable set.** Multi-leg candidates are generated per
+   leg set the plan would actually be bought for, not per the legs it happens to be listed
+   on: feasibility is re-checked per set, only maximal servable sets are kept as dedupe
+   keys, and >= 2 **legs** (not countries) qualifies — so repeat visits share one plan and a
+   plan too short for the whole trip can still serve a window of it. Rejected multi-leg
+   plans are explained by `regional_near_matches` / `regional_alternatives` rather than
+   vanishing. See DEVELOPMENT-LOG 2026-11-21.
+8. **Provenance is part of the output.** Snapshots, SHA-256, fetch times and the FX rate are in
    every report; `speed_filter_status.mode` always states `local_predicate` vs
    `verified_site_toggle` honestly.
 
@@ -78,6 +85,10 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
   file together; do not re-add the field on its own.
 - `itinerary.py` currency list and the wizard's currency list should not be able to drift; they
   are shared today but only by import.
+- `local_only` has no cross-leg dedupe: `_best_local_plan` can pick the *same* multi-country
+   plan once per leg (seen in a synthetic fixture: one plan bought three times). Buying two
+   copies of an SKU is legal, so this was left as-is, but it makes `purchase_count` and the
+   "one plan per destination" label weaker than they read. Untested either way.
 - No CI, no packaging release flow, no screenshots/GIF in the README.
 
 ## Do not publish (ignored by design)

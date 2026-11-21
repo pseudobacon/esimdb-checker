@@ -51,7 +51,8 @@ def _plan_bits(plan) -> str:
 def _itinerary_lines(report: Report) -> list[str]:
     it = report.trip
     lines = [
-        f"Itinerary: {it.total_days} travel day(s), {_gb(it.required_gb)} GB required, "
+        f"Itinerary: {it.total_days} charged day(s) over {it.span_days} travel day(s), "
+        f"{_gb(it.required_gb)} GB required, "
         f"currency {it.currency}"
         + (f", budget {_money(it.budget, it.currency)}" if it.budget is not None else ", no budget")
         + f", speed-capped: {_cap_state(report)}"
@@ -64,7 +65,7 @@ def _itinerary_lines(report: Report) -> list[str]:
             f"{_gb(leg.required_gb) + ' GB':>14}"
         )
     lines.append(
-        f"  {'TOTAL':<22} {it.total_days:>5}  {'1–' + str(it.total_days):>12}  "
+        f"  {'TOTAL':<22} {it.total_days:>5}  {'1–' + str(it.span_days):>12}  "
         f"{_gb(it.required_gb) + ' GB':>14}"
     )
     return lines
@@ -259,6 +260,36 @@ def _diagnostics_lines(report: Report) -> list[str]:
             f"    ? {n['leg']}: {n['plan']} — {n['provider']} "
             f"({_money(n['price'], n['currency'])}): {n['reason']}"
         )
+    reg_near = d.get("regional_near_matches", [])
+    reg_near_total = d.get("regional_near_matches_total", len(reg_near))
+    if reg_near_total:
+        lines.append(
+            f"  multi-country plans with enough data but not enough calendar: "
+            f"{reg_near_total}"
+        )
+        for e in reg_near[:6]:
+            lines.append(
+                f"    ? {e['name']} — {e['provider']} "
+                f"({_money(e['price'], e['currency']) if e['price'] is not None else 'no price'}): "
+                f"{e['reason']}"
+            )
+        if reg_near_total > len(reg_near):
+            lines.append(f"    … {reg_near_total - len(reg_near)} more ({len(reg_near)} shown)")
+    alts = d.get("regional_alternatives", [])
+    alt_total = d.get("regional_alternatives_total", len(alts))
+    if alt_total:
+        lines.append(
+            f"  other multi-leg plans that work, at a higher cost than the "
+            f"recommendation: {alt_total}"
+        )
+        for a in alts[:6]:
+            lines.append(
+                f"    ≈ {a['name']} — {a['provider']} "
+                f"({_money(a['price'], a['currency']) if a['price'] is not None else 'no price'}): "
+                f"covers {' + '.join(a['legs'])} (travel days {a['covers_days']})"
+            )
+        if alt_total > len(alts):
+            lines.append(f"    … {alt_total - len(alts)} more ({len(alts)} shown)")
     unserv = d.get("unservable_legs", [])
     if unserv:
         lines.append(f"  unservable legs (no plan can meet data/validity): {', '.join(unserv)}")
@@ -339,7 +370,7 @@ def render_markdown(report: Report) -> str:
     for leg in it.legs:
         w(f"| {leg.country_name} | {leg.days} | {leg.travel_days_label()} "
           f"| {_gb(leg.required_gb)} GB |")
-    w(f"| **Total** | **{it.total_days}** | **1–{it.total_days}** | **{_gb(it.required_gb)} GB** |")
+    w(f"| **Total** | **{it.total_days}** | **1–{it.span_days}** | **{_gb(it.required_gb)} GB** |")
     w("")
     w("## Strategy comparison")
     w("")

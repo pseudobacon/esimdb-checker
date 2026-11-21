@@ -30,6 +30,11 @@ from .models import Fx, Leg, Plan, Report, Strategy, StrategyPlan, Trip
 
 FAMILY_ORDER = ["local_only", "whole_trip", "hybrid"]
 
+# Multi-destination plans are tried against every subset of the legs they are listed
+# on up to this many legs (2^n work); wider trips fall back to contiguous travel
+# windows and say so in the report instead of quietly searching less.
+_MAX_SUBSET_LEGS = 8
+
 
 class RecommendationEngine:
     def __init__(
@@ -63,6 +68,12 @@ class RecommendationEngine:
         self.plan_ids_by_slug: dict[str, set[str]] = {}
         self.plan_by_id: dict[str, Plan] = {}
         self.plan_slugs: dict[str, set[str]] = {}
+        # Multi-destination candidates are computed once and reused by _evaluate,
+        # _diagnostics and totals; they depend only on the acquired data and flags.
+        self._regional_cache: list[tuple[float, Plan, tuple[int, ...]]] | None = None
+        self._regional_truncated = 0
+        self._regional_scope_mode = "exhaustive"
+        self._regional_windowed_plans = 0
         self.manifests: dict[str, dict[str, Any]] = {}
         self.source_urls: list[str] = []
         self.fetch_status: dict[str, dict[str, Any]] = {}
@@ -74,6 +85,12 @@ class RecommendationEngine:
         ``progress(step, total, label)`` is called before each destination's plan
         fetch, so an interactive front-end can show what it is waiting on.
         """
+        # Candidates depend on the legs and the acquired plans, so a reloaded engine must
+        # not serve a previous trip's cached leg sets.
+        self._regional_cache = None
+        self._regional_truncated = 0
+        self._regional_scope_mode = "exhaustive"
+        self._regional_windowed_plans = 0
         self.geo = geo.Geo.load(self.client, self.data_dir, self.use_cache)
         self.fx = fx_mod.fetch_fx(self.client, trip.currency, self.data_dir, self.use_cache)
         self.source_urls.extend([config.countries_endpoint(), config.regions_endpoint()])
@@ -207,46 +224,95 @@ class RecommendationEngine:
         assumptions = self._assumptions_for(plan, [leg], leg.start_day, trip)
         return plan, cost, assumptions, not unverified
 
-    def _regional_candidates(self, trip: Trip) -> list[tuple[float, Plan, list[int]]]:
-        # Dedupe by the set of legs a plan is listed on, keeping only the cheapest
-        # data-feasible plan per coverage scope. This bounds the candidate set to
-        # the number of distinct scopes (<= 2^n - 1) and guarantees the cheapest
-        # plan for each scope survives. A plain cost cap would prune the larger,
-        # pricier plans needed to serve the whole trip in favour of small cheap
-        # ones that can't meet any leg's data need.
-        best: dict[frozenset, tuple[float, Plan, list[int]]] = {}
-        for _pid, plan in self.plan_by_id.items():
+    def _regional_candidates(
+        self, trip: Trip
+    ) -> list[tuple[float, Plan, tuple[int, ...]]]:
+        """Cheapest plan per *servable leg set*, memoized.
+
+        Two rules used to be applied at the set of legs a plan happens to be listed
+        on: it had to span >= 2 distinct countries, and it had to be data-feasible
+        and valid for every one of those legs. Both hid the wrong plans. A 30-day
+        50 GB plan listed on all four destination pages of a 32-day trip is not a
+        whole-trip plan - but it is a perfectly good plan for the first 30 days of
+        it, and the old pre-check deleted it before the subset pass in `_evaluate`
+        could discover that. Repeat visits to one country were excluded outright,
+        so a trip that passes through the same country twice bought two plans where
+        a single longer plan serves both.
+
+        Feasibility is therefore judged per leg set the plan would actually serve,
+        and that leg set is the dedupe key. The candidate count is still bounded by
+        the number of leg sets, one plan each, so no cost cap can prune the pricier
+        plan that serves the whole trip; truncation (only possible on very wide
+        trips) is reported rather than silent.
+        """
+        if self._regional_cache is not None:
+            return self._regional_cache
+        best: dict[frozenset, tuple[float, Plan, tuple[int, ...]]] = {}
+        for plan in self.plan_by_id.values():
             if (not self._speed_ok(plan) or not self._provider_ok(plan)
                     or not self._purchasable(plan)):
                 continue
-            covered = [i for i, _ in self.legs if self._covers_leg(plan, self.leg_by_idx[i])]
-            if len({self.leg_by_idx[i].country.key for i in covered}) < 2:
-                continue  # regional/whole plans cover >= 2 distinct leg countries
-            covered_legs = [self.leg_by_idx[i] for i in covered]
-            # The plan must be able to serve the full set of legs it is listed on,
-            # both for data and for validity (when activated at the earliest of
-            # those legs). Cheapest-per-scope with this guarantee lets the subset
-            # pass in _evaluate reuse it for any subset of that scope.
-            if not self._data_feasible(plan, covered_legs, trip.daily_data_gb):
-                continue
-            act = min(self.leg_by_idx[i].start_day for i in covered)
-            hard_ok, _ = self._validity_info(plan, act, covered_legs)
-            if not hard_ok:
-                continue
+            covered = tuple(i for i, _ in self.legs
+                            if self._covers_leg(plan, self.leg_by_idx[i]))
+            if len(covered) < 2:
+                continue  # one leg only: that is a local pick, not a multi-leg purchase
             cost, comparable = plan.price_in(trip.currency, self.fx)
             if not comparable:
                 continue
-            key = frozenset(covered)
-            cur = best.get(key)
-            rank = (cost, -self.plan_by_id[plan.id].provider_popularity)
-            if cur is None or rank < (cur[0], -self.plan_by_id[cur[1].id].provider_popularity):
-                best[key] = (cost, plan, covered)
-        cands = list(best.values())
-        cands.sort(key=lambda t: (t[0], -self.plan_by_id[t[1].id].provider_popularity))
-        return cands[: self.regional_candidate_limit]
+            rank = (cost, -plan.provider_popularity)
+            for scope in self._servable_scopes(plan, covered, trip.daily_data_gb):
+                cur = best.get(scope)
+                if cur is None or rank < (cur[0], -cur[1].provider_popularity):
+                    best[scope] = (cost, plan, tuple(sorted(scope)))
+        cands = sorted(
+            best.values(),
+            key=lambda t: (-len(t[2]), t[0], -t[1].provider_popularity),
+        )
+        self._regional_scope_mode = (
+            "exhaustive" if not self._regional_windowed_plans
+            else "contiguous_windows_for_wide_plans"
+        )
+        self._regional_truncated = max(0, len(cands) - self.regional_candidate_limit)
+        self._regional_cache = cands[: self.regional_candidate_limit]
+        return self._regional_cache
+
+    def _servable_scopes(
+        self, plan: Plan, covered: tuple[int, ...], daily_data_gb: float
+    ) -> list[frozenset]:
+        """Maximal subsets of `covered` this plan can serve (data + validity).
+
+        Widen a leg set and its data need only grows while the span the validity has
+        to reach only lengthens, so every servable set sits under a maximal one and
+        only those need keeping: `_evaluate` re-enumerates the subsets of each and
+        prices them at the same cost, and a single-leg set is what `_best_local_plan`
+        already finds per leg. Above `_MAX_SUBSET_LEGS` legs the search is restricted
+        to contiguous travel windows, which is disclosed in the report.
+        """
+        if self._serves(plan, [self.leg_by_idx[i] for i in covered], daily_data_gb):
+            return [frozenset(covered)]
+        n = len(covered)
+        if n > _MAX_SUBSET_LEGS:
+            self._regional_windowed_plans += 1
+            sets: list[tuple[int, ...]] = [
+                covered[a:b + 1] for a in range(n) for b in range(a + 1, n)
+            ]
+        else:
+            sets = [tuple(s) for s in self._subsets(list(covered)) if len(s) >= 2]
+        ok = []
+        for S in sets:
+            if self._serves(plan, [self.leg_by_idx[i] for i in S], daily_data_gb):
+                ok.append(frozenset(S))
+        return [S for S in ok if not any(S < T for T in ok)]
+
+    def _serves(self, plan: Plan, legs: list[Leg], daily_data_gb: float) -> bool:
+        """One leg set: enough data for those legs, and still alive when the last ends."""
+        if not self._data_feasible(plan, legs, daily_data_gb):
+            return False
+        act = min(leg.start_day for leg in legs)
+        return self._validity_info(plan, act, legs)[0]
 
     @staticmethod
-    def _subsets(seq: list[int]) -> list[list[int]]:
+    def _subsets(seq: list[int] | tuple[int, ...]) -> list[list[int]]:
         n = len(seq)
         out = []
         for mask in range(1, 1 << n):
@@ -413,7 +479,11 @@ class RecommendationEngine:
 
     # ---- diagnostics -------------------------------------------------------
     def _diagnostics(
-        self, trip: Trip, strategies: dict[str, Strategy | None], local_picks: dict[int, Any | None]
+        self,
+        trip: Trip,
+        strategies: dict[str, Strategy | None],
+        local_picks: dict[int, Any | None],
+        recommended: Strategy | None,
     ) -> dict[str, Any]:
         """Bucket each covering plan under the reason that actually rules it out.
 
@@ -428,6 +498,12 @@ class RecommendationEngine:
         speedLimit, or the site's possibleThrottling flag). A plan that throttles only
         once its allowance is spent (reducedSpeed) is a normal candidate, so it is
         counted as admitted - or, under --strict-speed-cap, as excluded.
+
+        Two multi-destination buckets ride along, because a three-line summary cannot
+        answer "why was this specific plan not bought?": `regional_near_matches` for
+        plans that clear every filter but the calendar, and `regional_alternatives`
+        for plans that are genuinely feasible for part of the trip but were not the
+        cheapest purchase the recommendation made.
         """
         excluded_always_throttled: list[dict[str, Any]] = []
         throttled_total = 0
@@ -437,6 +513,8 @@ class RecommendationEngine:
         after_cap_admitted = 0
         after_cap_excluded_strict = 0
         seen_throttled: set[str] = set()
+        regional_near: list[dict[str, Any]] = []
+        regional_near_total = 0
         for pid, plan in self.plan_by_id.items():
             covered = [lg for i, lg in self.legs
                        if self.leg_by_idx[i].country.slug in self.plan_slugs.get(pid, set())]
@@ -473,11 +551,45 @@ class RecommendationEngine:
                         }
                     )
                     seen_throttled.add(pid)
+                continue
             elif after:
                 if self.strict_speed_cap:
                     after_cap_excluded_strict += 1
                 else:
                     after_cap_admitted += 1
+
+            # Enough data for every leg it is listed on, but the listed period runs
+            # out first. This is the "why isn't one plan enough for my whole trip?"
+            # answer, and it used to be invisible: such plans reached no bucket at all.
+            distinct = {lg.country.name for lg in covered}
+            if (len(covered) >= 2 and len(distinct) >= 2 and plan.period_days > 0
+                    and self._data_feasible(plan, covered, trip.daily_data_gb)):
+                act = min(lg.start_day for lg in covered)
+                cost, comparable = plan.price_in(trip.currency, self.fx)
+                # Only price-comparable plans can be weighed against the recommendation,
+                # so an unpriceable one is not worth a line here (it can never be bought
+                # in this currency either).
+                full_scope_ok, _ = self._validity_info(plan, act, covered)
+                if comparable and cost is not None and not full_scope_ok:
+                    last = max(lg.end_day for lg in covered)
+                    regional_near_total += 1
+                    regional_near.append({
+                        "id": pid,
+                        "name": plan.name,
+                        "provider": plan.provider,
+                        "price": _round(cost),
+                        "currency": trip.currency,
+                        "legs": [lg.country.name for lg in covered],
+                        "period_days": plan.period_days,
+                        "covers_days": f"{act}-{act + plan.period_days - 1}",
+                        "legs_run_to_day": last,
+                        "short_by_days": last - (act + plan.period_days - 1),
+                        "reason": (
+                            f"listed period {plan.period_days} days ends travel day "
+                            f"{act + plan.period_days - 1}, {last - (act + plan.period_days - 1)} "
+                            f"day(s) before the last leg it is listed on ends"
+                        ),
+                    })
 
         # near-matches: per leg, the cheapest purchasable, non-speed-excluded plan that
         # is data-feasible but provably expires before the leg ends.
@@ -513,7 +625,40 @@ class RecommendationEngine:
                     }
                 )
 
-        # unservable legs: no local pick and not covered by any regional candidate
+        # Feasible multi-destination purchases the recommendation did not make. The
+        # strategy table shows one winner per family, so every other plan that would
+        # genuinely work was previously absent from the report entirely.
+        # Closest to working first: a plan one day short is worth reading about, one
+        # 30 days short is not.
+        regional_near.sort(key=lambda e: (e["short_by_days"], e["price"], e["name"]))
+        used_ids = {sp.plan.id for s in list(strategies.values()) + [recommended]
+                    if s is not None for sp in s.plans}
+        alternatives: list[dict[str, Any]] = []
+        alt_total = 0
+        # Most of the trip covered first, then cheapest: the interesting question is
+        # "what else could one plan do?", not "what is the cheapest pair of legs?".
+        for cost, plan, scope in sorted(self._regional_candidates(trip),
+                                        key=lambda t: (-len(t[2]), t[0], t[1].name)):
+            if plan.id in used_ids:
+                continue
+            alt_total += 1
+            if len(alternatives) < _DETAIL_CAP:
+                alternatives.append({
+                    "id": plan.id,
+                    "name": plan.name,
+                    "provider": plan.provider,
+                    "price": _round(cost),
+                    "currency": trip.currency,
+                    "legs": [self.leg_by_idx[i].country.name for i in scope],
+                    "covers_days": (
+                        f"{min(self.leg_by_idx[i].start_day for i in scope)}"
+                        f"-{max(self.leg_by_idx[i].end_day for i in scope)}"
+                    ),
+                    "period_days": plan.period_days,
+                    "data_gb": None if plan.unlimited else round(plan.data_gb, 2),
+                })
+
+        # unservable legs: no local pick and not coverable by any feasible multi-leg plan
         regional_covered: set[int] = set()
         for _, _plan, covered in self._regional_candidates(trip):
             regional_covered.update(covered)
@@ -532,6 +677,10 @@ class RecommendationEngine:
             "unpurchasable_excluded": unpurchasable,
             "provider_filtered_out": off_provider,
             "near_matches": near_matches[:20],
+            "regional_near_matches": regional_near[:_DETAIL_CAP],
+            "regional_near_matches_total": regional_near_total,
+            "regional_alternatives": alternatives,
+            "regional_alternatives_total": alt_total,
             "unservable_legs": unservable,
             "fetch_failed_slugs": fetch_failed,
         }
@@ -562,9 +711,8 @@ class RecommendationEngine:
         assert self.geo is not None, "call load() first"
         local_picks = {i: self._best_local_plan(leg, trip) for i, leg in self.legs}
         strategies = self._evaluate(trip)
-        diag = self._diagnostics(trip, strategies, local_picks)
-        no_solution = self._no_solution_reason(trip, strategies, diag)
-
+        # The recommendation is chosen first: the diagnostics need to know which plans
+        # it bought, so that "feasible but not chosen" can be reported instead of lost.
         feasible = [s for s in strategies.values() if s is not None and s.comparable]
         recommended: Strategy | None = None
         if feasible:
@@ -573,6 +721,8 @@ class RecommendationEngine:
                 key=lambda s: (s.total_cost, s.purchase_count, FAMILY_ORDER.index(s.family)),
             )
 
+        diag = self._diagnostics(trip, strategies, local_picks, recommended)
+        no_solution = self._no_solution_reason(trip, strategies, diag)
         budget_status = self._budget_status(recommended, trip)
 
         # fill plan URLs for every reported strategy
@@ -607,6 +757,8 @@ class RecommendationEngine:
             "data_insufficient_filtered": diag["data_insufficient_filtered"],
             "unpurchasable_excluded": diag["unpurchasable_excluded"],
             "regional_candidates_considered": len(self._regional_candidates(trip)),
+            "regional_candidates_truncated": self._regional_truncated,
+            "regional_scope_search": self._regional_scope_mode,
             "feasible_families": [k for k in FAMILY_ORDER if strategies[k] is not None],
         }
 
@@ -621,6 +773,24 @@ class RecommendationEngine:
         ]
         if no_solution:
             notes.insert(0, f"No feasible strategy: {no_solution}.")
+        if self._regional_windowed_plans:
+            notes.append(
+                f"{self._regional_windowed_plans} plans are listed on more than "
+                f"{_MAX_SUBSET_LEGS} legs, so they were tried against contiguous travel "
+                f"windows rather than every leg combination."
+            )
+        if self._regional_truncated:
+            notes.append(
+                f"{self._regional_truncated} multi-destination leg combinations were dropped by "
+                f"the engine's candidate limit ({self.regional_candidate_limit}); some may be "
+                f"cheaper than what was recommended."
+            )
+        if diag["regional_alternatives_total"]:
+            notes.append(
+                f"{diag['regional_alternatives_total']} further multi-leg plans would "
+                f"work for part of this trip but cost more than the recommendation - listed "
+                f"under diagnostics."
+            )
         fx_note = self.fx.note if self.fx else ""
         if fx_note:
             notes.append(f"FX: {fx_note}")

@@ -289,3 +289,135 @@ def test_plan_names_are_unescaped_once_at_parse(tmp_path):
     names = [e["name"] for e in rep.diagnostics["excluded_always_throttled"]]
     assert names == ["Asia & Europe 52 Countries - Daily 3GB"]
     assert "&amp;" not in render_console(rep)
+
+
+def test_regional_plan_may_serve_only_a_window_of_a_longer_trip(tmp_path):
+    """A 30-day plan on a 32-day trip: not whole-trip, but it serves days 1-24.
+
+    The page-presence pre-check used to delete such a plan before the subset pass
+    could see the window it does cover, so it appeared in no strategy and in no
+    bucket.
+    """
+    trip = _trip([(ES, 12, 0), (FR, 12, 0), (JP, 8, 0)], daily_data_gb=1.0)
+    shared = entry("eu-asia-50-30", A, "Eurasia 50GB/30Days", 50000, 30, 18.0)
+    es = entry("es-13-30", B, "Spain 13GB/30Days", 13000, 30, 12.0)
+    fr = entry("fr-13-30", B, "France 13GB/30Days", 13000, 30, 12.0)
+    jp = entry("jp-9-30", J, "Japan 9GB/30Days", 9000, 30, 8.0)
+    rep = _run(
+        tmp_path,
+        [("spain", build_plans_payload([shared, es])),
+         ("france", build_plans_payload([shared, fr])),
+         ("japan", build_plans_payload([shared, jp]))],
+        trip,
+    )
+    assert rep.trip.span_days == 32
+    # The listed period ends on day 30, so no single plan can cover all 32 days.
+    assert rep.strategies["whole_trip"] is None
+    hy = rep.strategies["hybrid"]
+    assert hy is not None
+    window = [sp for sp in hy.plans if sp.plan.id == "eu-asia-50-30"]
+    assert window, "the 30-day plan should serve the first two legs"
+    assert window[0].legs == (0, 1)
+    assert rep.recommended is not None
+    assert rep.recommended.family == "hybrid"
+    assert rep.recommended.total_cost == 26.0  # shared 18 + a Japan plan 8
+    # Why it is not a whole-trip purchase is stated, not left to inference.
+    named = {e["id"]: e for e in rep.diagnostics["regional_near_matches"]}
+    assert "eu-asia-50-30" in named
+    assert named["eu-asia-50-30"]["short_by_days"] == 2
+
+
+def test_one_plan_can_cover_two_visits_to_the_same_country(tmp_path):
+    """Repeat visits used to force two purchases even when one plan spans both."""
+    trip = _trip([(ES, 5, 0), (FR, 3, 0), (ES, 5, 0)], daily_data_gb=1.0)
+    es_long = entry("es-12-30", A, "Spain 12GB/30Days", 12000, 30, 6.0)
+    fr = entry("fr-5-30", B, "France 5GB/30Days", 5000, 30, 4.0)
+    rep = _run(
+        tmp_path,
+        [("spain", build_plans_payload([es_long])), ("france", build_plans_payload([fr]))],
+        trip,
+    )
+    hy = rep.strategies["hybrid"]
+    assert hy is not None and hy.purchase_count == 2
+    shared = [sp for sp in hy.plans if sp.plan.id == "es-12-30"]
+    assert shared and shared[0].legs == (0, 2)
+    assert rep.recommended is not None and rep.recommended.total_cost == 10.0
+    assert rep.strategies["local_only"].total_cost == 16.0  # the same plan bought twice
+
+
+def test_calendar_only_multi_country_misses_are_named(tmp_path):
+    """Enough data and the right pages, too short for the calendar: named."""
+    from esimdb_checker.report import render_console
+
+    trip = _trip([(ES, 9, 0), (FR, 9, 0)], daily_data_gb=1.0)
+    short = entry("eu-20-3", A, "Europe 20GB/3Days", 20000, 3, 5.0)
+    fits = entry("eu-25-30", A, "Europe 25GB/30Days", 25000, 30, 15.0)
+    both = build_plans_payload([short, fits])
+    rep = _run(tmp_path, [("spain", both), ("france", both)], trip)
+    named = {e["id"] for e in rep.diagnostics["regional_near_matches"]}
+    assert "eu-20-3" in named
+    assert "eu-25-30" not in named  # it serves the trip, so it is no kind of miss
+    assert rep.diagnostics["regional_alternatives_total"] == 0
+    assert "not enough calendar" in render_console(rep)
+
+
+def test_feasible_multi_leg_plans_that_werent_bought_are_still_listed(tmp_path):
+    """The strategy table shows one winner per family; other workable plans go unseen."""
+    trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)], daily_data_gb=1.0)
+    x = entry("eurasia-30-60", A, "Eurasia 30GB/60Days", 30000, 60, 10.0)
+    y = entry("eu-20-30", B, "Europe 20GB/30Days", 20000, 30, 12.0)
+    es = entry("es-5-10", J, "Spain 5GB/10Days", 5000, 10, 7.0)
+    fr = entry("fr-5-10", J, "France 5GB/10Days", 5000, 10, 7.0)
+    jp = entry("jp-5-10", J, "Japan 5GB/10Days", 5000, 10, 7.0)
+    rep = _run(
+        tmp_path,
+        [("spain", build_plans_payload([x, y, es])),
+         ("france", build_plans_payload([x, y, fr])),
+         ("japan", build_plans_payload([x, jp]))],
+        trip,
+    )
+    assert rep.recommended is not None and rep.recommended.total_cost == 10.0
+    alts = rep.diagnostics["regional_alternatives"]
+    assert any(e["id"] == "eu-20-30" and e["legs"] == ["Spain", "France"]
+               and e["covers_days"] == "1-10" for e in alts)
+    assert all(e["id"] != "eurasia-30-60" for e in alts)  # it was bought
+    assert rep.diagnostics["regional_alternatives_total"] == 1
+
+
+def test_transfer_days_are_included_in_the_reported_travel_day_span(tmp_path):
+    """A transit day is uncharged but real: the report said 1-12 for a 13-day span."""
+    from esimdb_checker.report import render_console
+
+    trip = _trip([(ES, 5, 1), (FR, 7, 0)], daily_data_gb=1.0)
+    es = entry("es-5-30", A, "Spain 5GB/30Days", 5000, 30, 5.0)
+    fr = entry("fr-7-30", B, "France 7GB/30Days", 7000, 30, 6.0)
+    rep = _run(
+        tmp_path,
+        [("spain", build_plans_payload([es])), ("france", build_plans_payload([fr]))],
+        trip,
+    )
+    assert rep.trip.total_days == 12 and rep.trip.span_days == 13
+    text = render_console(rep)
+    assert "12 charged day(s) over 13 travel day(s)" in text
+    assert "1–13" in text
+
+
+def test_wide_trips_search_windows_and_say_so(tmp_path):
+    """Above the subset ceiling the search narrows - and the report admits it."""
+    from esimdb_checker.report import render_console
+
+    stops = [(ES, 3, 0) if i % 2 == 0 else (FR, 3, 0) for i in range(10)]
+    trip = _trip(stops, daily_data_gb=1.0)
+    both = build_plans_payload([
+        entry("eu-60-40", A, "Europe 60GB/40Days", 60000, 40, 30.0),
+        entry("es-3-20", B, "Spain 3GB/20Days", 3000, 20, 3.0),
+        entry("fr-3-20", J, "France 3GB/20Days", 3000, 20, 3.0),
+    ])
+    rep = _run(tmp_path, [("spain", both), ("france", both)], trip)
+    assert len(rep.trip.legs) == 10
+    assert rep.totals["regional_scope_search"] == "contiguous_windows_for_wide_plans"
+    assert "contiguous travel windows" in render_console(rep)
+    # Contiguous windows still find the pair that a whole-set check would have rejected.
+    hy = rep.strategies["hybrid"]
+    assert hy is not None
+    assert any(sp.plan.id == "eu-60-40" and len(sp.legs) >= 2 for sp in hy.plans)

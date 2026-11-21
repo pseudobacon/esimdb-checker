@@ -253,6 +253,17 @@ class Trip:
         return sum(leg.days for leg in self.legs)
 
     @property
+    def span_days(self) -> int:
+        """Calendar travel days: day 1 to the end of the last leg.
+
+        `total_days` counts charged days only, but a plan's validity has to survive
+        the calendar rather than the charge, and transfer days sit inside it. On a
+        trip with one transit day the report used to print "31 travel day(s)" and a
+        range of 1-31 while its last leg actually ran to day 32.
+        """
+        return self.total_days + sum(leg.transfer_days for leg in self.legs)
+
+    @property
     def required_gb(self) -> float:
         return self.total_days * self.daily_data_gb
 
@@ -294,6 +305,7 @@ class Trip:
             "currency": self.currency,
             "budget": _gb(self.budget) if self.budget is not None else None,
             "total_days": self.total_days,
+            "span_days": self.span_days,
             "required_gb": _gb(self.required_gb),
         }
 

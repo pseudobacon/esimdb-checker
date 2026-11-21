@@ -250,8 +250,9 @@ one (ranked in the requested currency):
 
 - **local-only** — one plan per destination.
 - **whole-trip** — a single plan listed on every destination's page (activated once).
-- **hybrid** — one regional plan for a subset of destinations plus per-destination plans
-  for the rest.
+- **hybrid** — one multi-destination plan for a subset of the legs plus per-destination
+  plans for the rest. Two visits to the same country are two legs, so one longer plan can
+  serve both; a plan too short for the whole trip can still serve a window of it.
 
 Each plan shows its activation day, which legs it serves (and their travel days), and any
 assumptions (e.g. a validity that must span the legs). A plan must be **data-feasible** and
@@ -260,14 +261,20 @@ Speed-capped plans and unpurchasable plans are never silent — always-throttled
 appear in `excluded_always_throttled` (with `excluded_always_throttled_total` for the true
 count) and unpurchasable ones in `unpurchasable_excluded`; plans kept only because their
 throttle waits for the allowance are counted in `after_cap_admitted` and flagged per row; a
-data-feasible-but-too-short plan is surfaced under `near_matches`. With `--budget`, the `budget_status` section reports whether
+data-feasible-but-too-short plan is surfaced under `near_matches`. For multi-destination
+plans there are two more buckets: `regional_near_matches` (listed on two or more countries,
+enough data, but the listed period ends before the legs it is listed on do — with
+`short_by_days` saying how far short) and `regional_alternatives` (feasible for some legs,
+but not bought by any winning strategy — so a pricier whole-trip plan, or one covering a
+different window of the trip, stays visible instead of being silently outranked). With
+`--budget`, the `budget_status` section reports whether
 the cheapest strategy is within budget (and, if not, the compound 10% steps needed to relax
 it).
 
 ## Testing
 
 ```bash
-uv run pytest                 # 173 offline tests (mocked API + headless TUI), no network
+uv run pytest                 # 179 offline tests (mocked API + headless TUI), no network
 uv run ruff check .           # lint - clean, exit 0
 ```
 
