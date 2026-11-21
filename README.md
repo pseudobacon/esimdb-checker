@@ -150,6 +150,7 @@ esimdb-checker fetch "https://esimdb.com/api/client/countries"
 | `--max-purchases N` | recommend the cheapest strategy that buys at most N eSIMs | no limit |
 | `--fewer-sims [PCT]` | recommend the fewest eSIMs within PCT% of the cheapest total | off (`PCT` 10) |
 | `--activate-lead-days N` | install each eSIM N days before the first arrival it serves, and count validity from that earlier day | `1` (the day before; `0` = on arrival) |
+| `--show-purchases N[,N…]` or `all` | also print the full buy list for those "Cost of convenience" rows, not just the recommended one | off |
 | `--json` | print the full typed report as JSON to stdout | console text |
 | `--md` | write a Markdown report (with `--out`, default `report.md`) | — |
 | `--out FILE` | output file for `--md`, or for console text when `--md`/`--json` are absent; with `--json` also copies the JSON there while stdout stays clean | — |
@@ -278,6 +279,20 @@ esimdb-checker recommend --itinerary trip.json --fewer-sims       # fewest withi
 esimdb-checker recommend --itinerary trip.json --fewer-sims 3     # tighter tolerance
 esimdb-checker recommend --itinerary trip.json --max-purchases 2  # hard limit, whatever it costs
 ```
+
+The ladder prices six ways to buy the trip, but the report used to spell out an install list for
+one of them — so comparing rows meant re-running the tool once per row. Name the rows instead:
+
+```bash
+esimdb-checker recommend --itinerary trip.json --show-purchases 3      # what the 3-eSIM row buys
+esimdb-checker recommend --itinerary trip.json --show-purchases 2,4
+esimdb-checker recommend --itinerary trip.json --show-purchases all
+```
+
+Each named row gets the same detail as the recommendation — plan, provider, install day, which
+legs it serves, price, data and validity — because an alternative you are being asked to weigh
+should not be described in less detail than the answer. It changes nothing about what is
+recommended; a count nothing feasible buys is an error naming the counts that do exist.
 
 **Installing before you fly is the model, and it changes the answer.** An eSIM needs internet to
 install and arrival does not guarantee any, so a plan is assumed to be installed the day before

@@ -406,6 +406,10 @@ class Report:
     # these is required, so adding them here keeps existing constructors working.
     purchase_frontier: list[dict[str, Any]] = field(default_factory=list)
     purchase_policy: dict[str, Any] = field(default_factory=dict)
+    # The live strategy behind each ladder row, keyed by purchase count, so the report can
+    # spell out what a row would buy. Deliberately absent from to_dict(): it is the same
+    # information purchase_frontier already publishes, not a second copy of the answer.
+    ladder_strategies: dict[int, Strategy] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {

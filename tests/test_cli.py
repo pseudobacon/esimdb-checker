@@ -150,3 +150,61 @@ def test_activate_lead_days_reaches_the_engine(tmp_path, capsys):
               "--activate-lead-days", "-1", "--json"])
     assert exc.value.code == 2
     assert "must not be negative" in capsys.readouterr().err
+
+
+def test_show_purchases_expands_ladder_rows(tmp_path, capsys):
+    """The ladder priced every option; the install list used to follow only the answer."""
+    from esimdb_checker.itinerary import build_trip, save_itinerary_file
+    from esimdb_checker.models import Country
+
+    es = Country(code="ES", name="Spain", slug="spain")
+    jp = Country(code="JP", name="Japan", slug="japan")
+    trip = build_trip([(es, 6, 0), (jp, 6, 0)], daily_data_gb=1.0, currency="GBP")
+    path = save_itinerary_file(trip, tmp_path / "two.itinerary.json", overwrite=True)
+
+    world = build_plan_entry(plan_id="glob-60", provider=P1, name="World 60GB/60Days",
+                             capacity_mb=60000, period_days=60, prices={"USD": 30.0})
+
+    def payload(local):
+        return build_plans_payload([world, local])
+
+    sp = build_plan_entry(plan_id="es-6", provider=P1, name="Spain 6GB/30Days",
+                          capacity_mb=6000, period_days=30, prices={"USD": 5.0})
+    jp6 = build_plan_entry(plan_id="jp-6", provider=P1, name="Japan 6GB/30Days",
+                           capacity_mb=6000, period_days=30, prices={"USD": 6.0})
+
+    def go(*extra):
+        with respx.mock(assert_all_called=False) as router:
+            mock_geo_routes(router)
+            mock_fx_route(router, "GBP", 0.79)
+            mock_plans_route(router, "spain", payload(sp))
+            mock_plans_route(router, "japan", payload(jp6))
+            rc = main(["--data-dir", str(tmp_path), "recommend", "--itinerary", str(path),
+                       "--refresh", *extra])
+        return rc, capsys.readouterr().out
+
+    rc, out = go()
+    assert rc == 0
+    assert "What 1 eSIM would buy" not in out  # silent unless asked
+
+    rc, out = go("--show-purchases", "1")
+    assert rc == 0
+    head = next(ln for ln in out.splitlines() if ln.startswith("  What 1 eSIM"))
+    assert "would buy" in head
+    block = out.split(head, 1)[1].split("RECOMMENDED", 1)[0]
+    assert block.count("buy ") == 1 and "World 60GB/60Days" in block
+
+    rc, out = go("--show-purchases", "all")
+    assert rc == 0
+    assert "What 1 eSIM would buy" in out and "What 2 eSIMs would buy" in out
+
+    # A count nothing buys is an error naming the counts that do, not a silent no-op.
+    with pytest.raises(SystemExit) as exc:
+        go("--show-purchases", "5")
+    assert exc.value.code == 2
+    assert "no feasible option buys [5]" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit) as exc:
+        go("--show-purchases", "two")
+    assert exc.value.code == 2
+    assert "purchase counts" in capsys.readouterr().err

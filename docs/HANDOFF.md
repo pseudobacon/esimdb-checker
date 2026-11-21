@@ -3,7 +3,7 @@
 Compact snapshot. Design detail lives in [ARCHITECTURE.md](ARCHITECTURE.md); the dated
 history lives in [DEVELOPMENT-LOG.md](DEVELOPMENT-LOG.md).
 
-Snapshot date: **2026-11-21**.
+Snapshot date: **2026-11-22**.
 
 ## What this is
 
@@ -17,7 +17,7 @@ day counts, data need, validity and budget. Research only — it never buys or a
 | --- | --- |
 | Package | `esimdb-checker` 0.1.0, `src/` layout, Python 3.10+, console script `esimdb-checker` |
 | Runtime deps | `httpx`, `textual` — **no browser, no Playwright at runtime** |
-| Tests | **195 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
+| Tests | **199 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
 | Lint | `ruff check .` **clean, exit 0**. Pre-existing debt (174 findings at the baseline commit) swept in two passes — see DEVELOPMENT-LOG. |
 | Type check | none configured (`mypy` not installed, no config) |
 | CI | none |
@@ -45,9 +45,64 @@ esimdb-checker recommend … --budget 17.5 --max-purchases 2
      -> "A 3-purchase strategy at £17.41 would fit - a purchase policy is what ruled it out"
 esimdb-checker recommend … --budget 18 --fewer-sims -> 4 purchases: the 2-eSIM split busts £18
 esimdb-checker recommend … --budget 17 --fewer-sims -> 2 eSIMs £18.63; nothing on the ladder fits £17
+esimdb-checker recommend … --show-purchases 3 -> prints the 3-eSIM buy list under the ladder,
+     recommendation unchanged (2 eSIMs £18.63 with --fewer-sims)
+esimdb-checker recommend … --show-purchases all -> one block per ladder row (6 on the sample trip)
+esimdb-checker recommend … --show-purchases 7 -> exit 2: "no feasible option buys [7]; the
+     purchase counts that do exist are [1, 2, 3, 4, 5, 6]"
+esimdb-checker recommend … --show-purchases two -> exit 2: "takes 'all' or purchase counts"
+esimdb-checker recommend … --show-purchases 2,3 --md -> "**What 2 eSIMs would buy**" bullets
 esimdb-checker recommend --itinerary …        -> console, --json, --md, --strict-speed-cap, --include-capped
 pty-driven wizard walkthrough                 -> see README "Verified in a terminal"
 ```
+
+## Open work — `--show-purchases`
+
+Started and committed 2026-11-22, working but **not finished**. It answers a real complaint: the
+ladder priced six ways to buy the trip while only the recommendation said what you would install,
+so weighing the 3-eSIM row meant re-running the tool once per row.
+
+What exists: `--show-purchases N[,N…]|all` in `_add_engine_args` (so `recommend` and
+`recommend-wizard` both accept it); `_parse_show_purchases` for syntax; counts resolved against
+`report.purchase_frontier` at the end of `_run_engine` and echoed into
+`report.totals["show_purchases"]` in ladder order; `Report.ladder_strategies` (the live strategy
+per row, deliberately absent from `to_dict()`); `report._expanded_rows()` for console and an
+equivalent block in `render_markdown`; `report._buy_lines()` factored out of the recommendation
+block so both renderers share one implementation; `activation_day` added to each
+`purchase_frontier[].plans` entry in `--json`. Four tests: three in `test_recommend.py` (expansion
+detail, infeasible count, Markdown), one in `test_cli.py` (silent by default, counts, `all`, both
+error paths).
+
+Left to do, roughly in order of value:
+
+1. **Expanded rows omit the verification assumptions.** `_expanded_rows()` calls `_buy_lines()`
+   and stops; the recommendation block additionally prints `verification assumptions:` with the
+   activation-terms and speed-cap-acceptance lines. The helper's docstring promises "the same
+   detail as the answer", so either add the assumptions (`for a in s.assumptions:` under the buy
+   list, indented like the recommendation's) or narrow the claim. A speed-capped alternative
+   currently discloses the cap only via the `⚠` in `_plan_bits`.
+2. **The wizard path is plumbed but untested.** `cmd_recommend_wizard` calls
+   `_validate_purchase_args` (cli.py:408) and `_run_engine` with the same namespace (cli.py:516),
+   so the flag reaches it — never verified through a Pilot test. This is the exact defect class
+   of "a flag the wizard accepts and then ignores"; add `tests/test_cli_wizard.py` coverage or
+   state in `--help` that it is console-only output.
+3. **No DEVELOPMENT-LOG entry yet.** It should record the complaint (a six-row ladder with one
+   install list), the `ladder_strategies` field and why it stays out of `to_dict()`, the shared
+   `_buy_lines()` and the reason an alternative must be described in the same detail as the
+   answer, and the exit-2 behaviour on an infeasible count instead of a silent no-op.
+4. **`--show-purchases all` is uncapped.** Six rows on the sample trip; a 12-leg trip prints
+   twelve blocks of up to twelve plans. Other detail is capped by `_DETAIL_CAP` with `*_total`
+   carrying the real figure (see decision 4). Decide whether `all` needs a ceiling or a note.
+5. **`--json` shape is undocumented.** `totals.show_purchases` and the new
+   `purchase_frontier[].plans[].activation_day` have no schema doc anywhere; README describes the
+   flags, not the payload. Worth one section if the JSON is ever consumed by another tool.
+
+Verified so far: the four new tests, `tests/test_recommend.py` + `tests/test_cli.py` in full,
+`ruff check .` clean, and every real-data line in the checks block above run by hand on
+`asia-2026.itinerary.json`. The full suite was then re-run offline after the change: **199 tests,
+no failures, exit 0**. (Run it as `python -m pytest tests/ -p no:cacheprovider -q`; `pyproject.toml`
+also sets `addopts = "-q"`, and in a redirected run the "N passed" summary line was absent while
+every dot was printed — check the exit code, not the last line.)
 
 ## Where things live
 
@@ -79,14 +134,14 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
    `*_total` keys carry the real figures. Two truncation bugs of this class were found and fixed.
 5. **The wizard is keyboard-only.** No buttons, no mouse capture (verified: no mouse-tracking
    sequence in the byte stream), so native terminal copy still works.
-7. **A plan's page set is not its servable set.** Multi-leg candidates are generated per
+6. **A plan's page set is not its servable set.** Multi-leg candidates are generated per
    leg set the plan would actually be bought for, not per the legs it happens to be listed
    on: feasibility is re-checked per set, only maximal servable sets are kept as dedupe
    keys, and >= 2 **legs** (not countries) qualifies — so repeat visits share one plan and a
    plan too short for the whole trip can still serve a window of it. Rejected multi-leg
    plans are explained by `regional_near_matches` / `regional_alternatives` rather than
    vanishing. See DEVELOPMENT-LOG 2026-11-21.
-8. **The families are labels over one search, not three searches.** The engine prices every
+7. **The families are labels over one search, not three searches.** The engine prices every
    purchase count (1 eSIM … one per leg) and calls k=1 `whole_trip`, k=legs `local_only`, the
    rest `hybrid`. They used to be enumerated separately, which meant a 2-eSIM answer was
    unpriceable and often unfindable — the search bought at most one multi-country plan. Cheapest
@@ -94,10 +149,10 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
    (fewest within a tolerance, default 10%) are opt-in, and a limit nothing fits recommends
    nothing rather than quietly exceeding it. A split may buy the same SKU twice; that is legal
    and says so in the assumptions. See DEVELOPMENT-LOG 2026-11-22.
-9. **Provenance is part of the output.** Snapshots, SHA-256, fetch times and the FX rate are in
+8. **Provenance is part of the output.** Snapshots, SHA-256, fetch times and the FX rate are in
    every report; `speed_filter_status.mode` always states `local_predicate` vs
    `verified_site_toggle` honestly.
-10. **The convenience tolerance and the budget have a stated order of precedence.** `--fewer-sims`
+9. **The convenience tolerance and the budget have a stated order of precedence.** `--fewer-sims`
     measures its tolerance against the *unrestricted* cheapest total even when `--max-purchases`
     binds — if nothing inside the limit is within tolerance, the rule becomes `fewest_within_limit`
     and the report says so instead of claiming a percentage it missed. A budget outranks
@@ -107,7 +162,7 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
     ladder is also priced with the same currency clock (`vs_cheapest_pct` is null, not zero, when
     no floor exists), and the contiguous-window fallback says "fewest purchases found" because
     above 10 legs it does not search every split. Fixed after review; see DEVELOPMENT-LOG 2026-11-22.
-11. **Installation happens where the internet is known.** `activate_lead_days`
+10. **Installation happens where the internet is known.** `activate_lead_days`
     (`--activate-lead-days N`, **default 1**, asserted by a test so it cannot drift; 0 reproduces
     the pre-2026-11 numbers) moves every activation to N days before the earliest leg a
     plan serves — through one `_activation_day(legs)` helper used by local candidates, multi-leg
@@ -117,6 +172,15 @@ pty-driven wizard walkthrough                 -> see README "Verified in a termi
     of many-purchase splits, so a longer lead moves the optimum to *fewer* eSIMs (sample trip: 5 → 4
     → 3 as the lead goes 0 → 1 → 2). A negative activation day is valid output and renders as "the day
     before the trip starts".
+
+11. **An alternative must be described in the same detail as the answer.** `--show-purchases`
+    expands "Cost of convenience" rows into install lists using `_buy_lines()`, the same helper the
+    recommendation uses, so the two cannot drift in wording or detail. It is reporting, not
+    choosing: nothing about which strategy is recommended moves. Rows are named by purchase count,
+    validated against the rows that actually exist, and an impossible count exits 2 naming the
+    feasible ones rather than printing nothing. `Report.ladder_strategies` carries the live
+    strategies and stays out of `to_dict()` because `purchase_frontier` already publishes that
+    information. See DEVELOPMENT-LOG (to be written) and "Open work" above.
 
 ## Known debt / open items
 

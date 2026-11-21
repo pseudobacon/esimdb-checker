@@ -142,6 +142,37 @@ def _frontier_lines(report: Report) -> list[str]:
             f"{_money(fewest['total_cost'], fewest['currency'])} (+{pct:.1f}% vs cheapest)"
         )
         lines.append(f"    {plans}")
+    lines.extend(_expanded_rows(report))
+    return lines
+
+
+def _expanded_rows(report: Report) -> list[str]:
+    """Buy lists for the ladder rows named by --show-purchases.
+
+    The ladder prices every number of eSIMs, but only the recommendation says what you would
+    install - so comparing rows meant re-running the tool once per row. These blocks price a
+    row and then spell it out, in the same words the recommendation uses.
+    """
+    wanted = (report.totals or {}).get("show_purchases") or []
+    if not wanted:
+        return []
+    rows = {r["purchases"]: r for r in report.purchase_frontier}
+    lines: list[str] = []
+    for k in wanted:
+        row, s = rows.get(k), report.ladder_strategies.get(k)
+        lines.append("")
+        if row is None or s is None:
+            lines.append(f"  Nothing feasible buys exactly {k} eSIM{'s' if k != 1 else ''}; "
+                         "cannot show a buy list.")
+            continue
+        pct = row.get("vs_cheapest_pct")
+        vs = ("the cheapest" if pct is None or abs(pct) < 0.05 else f"+{pct:.1f}% vs cheapest")
+        tag = " - and this is the recommendation" if row.get("recommended") else ""
+        lines.append(
+            f"  What {k} eSIM{'s' if k != 1 else ''} would buy "
+            f"({_money(row['total_cost'], row['currency'])}, {vs}){tag}:"
+        )
+        lines.extend(_buy_lines(report, s))
     return lines
 
 
@@ -168,6 +199,23 @@ def _strategy_detail_lines(report: Report, s: Strategy, title: str) -> list[str]
         lines.append("  verification assumptions:")
         for a in s.assumptions:
             lines.append(f"    • {a}")
+    return lines
+
+
+def _buy_lines(report: Report, s: Strategy) -> list[str]:
+    """The 'buy N. …' install list for one strategy.
+
+    Shared by the recommendation and by an expanded ladder row on purpose: an alternative you
+    are asked to consider has to be described in exactly the same detail as the answer, or the
+    comparison is rigged by formatting.
+    """
+    lines = []
+    for i, sp in enumerate(s.plans, start=1):
+        provider = sp.provider if hasattr(sp, "provider") else sp.plan.provider
+        lines.append(f"  buy {i}. {sp.plan.name} — {provider}")
+        lines.append(f"      activate {_activation_text(sp, report)}")
+        lines.append(f"      serves: {_sp_legs(sp, report)}")
+        lines.append(f"      price: {_money(sp.cost, s.currency)}  ·  {_plan_bits(sp.plan)}")
     return lines
 
 
@@ -226,12 +274,7 @@ def _recommendation_lines(report: Report) -> list[str]:
     else:
         why = "cheapest price-comparable feasible strategy"
     lines = [f"RECOMMENDED: {rec.family}  ({why})"]
-    for i, sp in enumerate(rec.plans, start=1):
-        provider = sp.provider if hasattr(sp, "provider") else sp.plan.provider
-        lines.append(f"  buy {i}. {sp.plan.name} — {provider}")
-        lines.append(f"      activate {_activation_text(sp, report)}")
-        lines.append(f"      serves: {_sp_legs(sp, report)}")
-        lines.append(f"      price: {_money(sp.cost, rec.currency)}  ·  {_plan_bits(sp.plan)}")
+    lines.extend(_buy_lines(report, rec))
     # why it wins: savings vs other families
     others = {
         k: report.strategies.get(k)
@@ -483,6 +526,23 @@ def render_markdown(report: Report) -> str:
                   for p in fewest["plans"]
               ))
         w("")
+        for k in (report.totals or {}).get("show_purchases") or []:
+            row = next((r for r in report.purchase_frontier if r["purchases"] == k), None)
+            s = report.ladder_strategies.get(k)
+            if row is None or s is None:
+                w(f"Nothing feasible buys exactly {k} eSIM{'s' if k != 1 else ''}.")
+                w("")
+                continue
+            pct = row.get("vs_cheapest_pct")
+            vs = "the cheapest" if pct is None or abs(pct) < 0.05 else f"+{pct:.1f}% vs cheapest"
+            w(f"**What {k} eSIM{'s' if k != 1 else ''} would buy** "
+              f"(**{_money(row['total_cost'], row['currency'])}**, {vs}) — "
+              f"{'_recommended_' if row.get('recommended') else ''}")
+            for sp in s.plans:
+                w(f"- **{sp.plan.name}** — {sp.plan.provider}: {_money(sp.cost, s.currency)}, "
+                  f"activate {_activation_text(sp, report)}, serves {_sp_legs(sp, report)}, "
+                  f"{_plan_bits(sp.plan)}")
+            w("")
     w("## Recommendation")
     w("")
     rec = report.recommended

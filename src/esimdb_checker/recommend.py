@@ -1077,6 +1077,9 @@ class RecommendationEngine:
                             "price": _round(sp.cost),
                             "currency": trip.currency,
                             "legs": [self.leg_by_idx[i].country.name for i in sp.legs],
+                            # The install day belongs to the strategy, not the plan: the same SKU
+                            # installs on a different day depending on which legs this row gives it.
+                            "activation_day": sp.activation_day,
                         }
                         for sp in s.plans
                     ],
@@ -1250,6 +1253,7 @@ class RecommendationEngine:
             strategies=strategies,
             budget_status=budget_status,
             purchase_frontier=self._frontier_rows(per_k, recommended, trip),
+            ladder_strategies=dict(per_k),
             purchase_policy=policy,
             diagnostics=diag,
             totals=totals,

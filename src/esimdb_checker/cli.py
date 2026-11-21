@@ -72,6 +72,10 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                         f"arrival without data means no way to install it (validity is measured "
                         f"from that earlier day; default {_DEFAULT_ACTIVATE_LEAD_DAYS}, "
                         f"pass 0 to install on arrival)")
+    p.add_argument("--show-purchases", dest="show_purchases", metavar="N[,N…]|all",
+                   default=None,
+                   help="also print the full buy list for the given 'Cost of convenience' "
+                        "rows (purchase counts, or 'all'), not just the recommended one")
     p.add_argument("--refresh", action="store_true",
                    help="re-fetch from esimdb.com, bypassing the cache")
 
@@ -182,6 +186,21 @@ def _client() -> httpx.Client:
     return http.build_client()
 
 
+def _parse_show_purchases(spec: str):
+    """'all' or '3' / '2,4' -> 'all' or sorted ints. Exits 2 on anything else."""
+    text = (spec or "").strip().lower()
+    if text == "all":
+        return "all"
+    counts = []
+    for token in text.split(","):
+        token = token.strip()
+        if not token.isdigit() or int(token) < 1:
+            _fail("--show-purchases takes 'all' or purchase counts like 3 or 2,4 "
+                  f"(got {spec!r})", 2)
+        counts.append(int(token))
+    return sorted(set(counts))
+
+
 def _run_engine(client: httpx.Client, trip: Trip, args, data_dir: Path, use_cache: bool,
                 progress=None):
     engine = RecommendationEngine(
@@ -196,7 +215,18 @@ def _run_engine(client: httpx.Client, trip: Trip, args, data_dir: Path, use_cach
         activate_lead_days=getattr(args, "activate_lead_days", _DEFAULT_ACTIVATE_LEAD_DAYS),
     )
     engine.load(trip, progress=progress)
-    return engine.recommend(trip)
+    report = engine.recommend(trip)
+    spec = getattr(args, "show_purchases", None)
+    if spec is not None:
+        available = [r["purchases"] for r in report.purchase_frontier]
+        wanted = available if spec == "all" else spec
+        missing = [k for k in wanted if k not in available]
+        if missing:
+            _fail(f"--show-purchases: no feasible option buys {missing}; "
+                  f"the purchase counts that do exist are {available or 'none'}", 2)
+        # Ladder order, so the blocks appear in the same sequence as the table above them.
+        report.totals["show_purchases"] = [k for k in available if k in set(wanted)]
+    return report
 
 
 def _validate_purchase_args(args) -> None:
@@ -210,6 +240,10 @@ def _validate_purchase_args(args) -> None:
     lead = getattr(args, "activate_lead_days", 0)
     if lead < 0:
         _fail("--activate-lead-days must not be negative (0 means 'install on arrival')", 2)
+    if getattr(args, "show_purchases", None) is not None:
+        # Syntax only: whether a count exists at all depends on which strategies turn out
+        # feasible, which is not known until the engine has run.
+        args.show_purchases = _parse_show_purchases(args.show_purchases)
 
 
 def _validate_output_args(args) -> None:

@@ -483,6 +483,46 @@ def test_frontier_prices_every_number_of_esims(tmp_path):
     assert "Cost of convenience" in render_console(rep)
 
 
+def test_show_purchases_expands_a_row_without_changing_the_answer(tmp_path):
+    """The ladder priced six options but said what only one of them installs."""
+    trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)])
+    rep = _run(tmp_path, _frontier_payloads(), trip)
+    before = render_console(rep)
+
+    rep.totals["show_purchases"] = [2]
+    after = render_console(rep)
+    head = next(ln for ln in after.splitlines() if ln.startswith("  What 2 eSIM"))
+    assert "+6.7% vs cheapest" in head
+    block = after.split(head, 1)[1].split("RECOMMENDED", 1)[0]
+    # The row is described in the same detail as the recommendation, not as a name list.
+    assert block.count("buy ") == 2
+    assert "Europe 15GB/30Days" in block and "Japan 6GB/30Days" in block
+    assert "travel day" in block
+    # Reporting only: the recommendation and its own buy list are untouched.
+    assert "RECOMMENDED" in after and "buy 3." in after.split("RECOMMENDED", 1)[1]
+    prefix = "  buy "
+    assert (sum(ln.startswith(prefix) for ln in before.splitlines()) + 2
+            == sum(ln.startswith(prefix) for ln in after.splitlines()))
+
+
+def test_show_purchases_refuses_a_count_that_no_strategy_buys(tmp_path):
+    trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)])
+    rep = _run(tmp_path, _frontier_payloads(), trip)
+    rep.totals["show_purchases"] = [9]
+    assert "Nothing feasible buys exactly 9 eSIMs" in render_console(rep)
+
+
+def test_show_purchases_markdown_expands_the_same_rows(tmp_path):
+    from esimdb_checker.report import render_markdown
+    trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)])
+    rep = _run(tmp_path, _frontier_payloads(), trip)
+    rep.totals["show_purchases"] = [1, 2]
+    md = render_markdown(rep)
+    assert "**What 1 eSIM would buy**" in md and "**What 2 eSIMs would buy**" in md
+    bullets = md.split("**What 1 eSIM would buy**", 1)[1].split("**What 2 eSIMs")[0]
+    assert bullets.count("\n- **") == 1
+
+
 def test_frontier_endpoints_are_the_named_families(tmp_path):
     trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)])
     rep = _run(tmp_path, _frontier_payloads(), trip)
