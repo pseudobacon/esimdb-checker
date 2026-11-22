@@ -38,6 +38,10 @@ The folded plan payload is compact and **positional**:
 
 Notes:
 - `capacityMB == 0` means **unlimited** data.
+- Labels show capacity in the site's own unit — **1 GB = 1000 MB** (84k+ plan names match
+  MB/1000, none match MB/1024), so a 3000 MB plan prints "3 GB" and the 500 MB packages
+  stay "500 MB". Feasibility maths still uses the raw megabytes, which keeps the checks
+  slightly conservative relative to the label.
 - `dataCapPer` (row index 7, when present and `day`/`month`/`week`) means the capacity is a
   **per-day** (or per-month/week) allowance, not a one-time allotment.
 - `speedLimit` / `reducedSpeed` are in **kbps** (e.g. `5000` = 5 Mbps, matching the plan

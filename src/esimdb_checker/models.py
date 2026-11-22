@@ -46,6 +46,22 @@ class Country:
 # ---------------------------------------------------------------------------
 # plan
 # ---------------------------------------------------------------------------
+def _gb_label(mb: int) -> str:
+    """Capacity in the site's own unit: 1 GB = 1000 MB.
+
+    The API stores megabytes and the plans' advertised names match MB/1000
+    (84k+ names agree, zero match MB/1024), so labels use base-1000 to show what
+    the site sells. Sub-GB amounts (the 500 MB packages) stay in MB.
+    Display only: feasibility maths keeps using the raw MB via `data_gb`.
+    """
+    if mb < 1000:
+        return f"{mb} MB"
+    g = mb / 1000
+    if abs(g - round(g)) < 0.005:
+        return f"{int(round(g))} GB"
+    return f"{g:.2f}".rstrip("0").rstrip(".") + " GB"
+
+
 @dataclass
 class Plan:
     id: str
@@ -140,11 +156,8 @@ class Plan:
     def capacity_label(self) -> str:
         if self.unlimited:
             return "Unlimited"
-        mb = self.capacity_mb
         per = "/day" if self.is_daily_refill() else ""
-        if mb >= 1024:
-            return f"{mb / 1024:g} GB{per}"
-        return f"{mb} MB{per}"
+        return _gb_label(self.capacity_mb) + per
 
     def period_label(self) -> str:
         if self.period_days == 0:
@@ -154,8 +167,7 @@ class Plan:
     def data_cap_label(self) -> str:
         if not self.is_daily_refill():
             return ""
-        gb = self.capacity_mb / 1024
-        return f"up to {gb:g} GB/day"
+        return f"up to {_gb_label(self.capacity_mb)}/day"
 
     def speed_label(self) -> str:
         parts: list[str] = []

@@ -158,15 +158,8 @@ def _buys_summary(s: Strategy, report: Report) -> str:
         return f"locals for all {n} stays" if n == stays else f"{n} local plans"
     if n == 1:
         p = s.plans[0].plan
-        if p.unlimited:
-            cap = "unlimited"
-        elif p.is_daily_refill():
-            cap = f"{p.capacity_mb / 1000:g} GB/day"
-        else:
-            g = p.capacity_mb / 1000  # base-1000, the way the site labels plans
-            cap = f"{g:.0f} GB" if abs(g - round(g)) < 0.05 else f"{g:g} GB"
         period = f"/{p.period_days}d" if p.period_days else ""
-        return f"{p.provider} {cap}{period}"
+        return f"{p.provider} {p.capacity_label()}{period}"
     if n <= 3:
         short = [name if len(name) <= 24 else name[:23] + "…"
                  for name in (sp.plan.name for sp in s.plans)]
