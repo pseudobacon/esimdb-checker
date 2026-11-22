@@ -219,8 +219,8 @@ pseudo-terminal: the byte stream contains no mouse-tracking sequence).
 **After the search: the results page.** When the query finishes inside the interface, the
 screen does not come back to the shell: it shows the same ladder table the console report
 prints, with the rungs listed as options at the bottom. Pressing a rung's number (e.g. `2`)
-opens a detail page for that strategy — a table of each SIM with its cost, activation day,
-and the legs it serves, plus the purchase link for every plan on its own line — and from
+opens a detail page for that strategy — a table of each SIM with its cost and the legs it
+serves, plus the purchase link for every plan on its own line — and from
 there `b`/`Esc` goes back to the ladder while `q` exits the wizard (the report is then
 printed to the terminal as usual). `q` on the ladder page does the same. If the search
 fails, or nothing feasible is found, there is nothing to browse and the wizard leaves as
@@ -346,10 +346,10 @@ long-validity plan absorbs a lead-in day for free.
 esimdb-checker recommend --itinerary trip.json --activate-lead-days 0   # install on arrival
 ```
 
-The report header states the lead, and each plan prints the day it is assumed to be installed on
-— including travel day 0, meaning "the day before the trip starts" — so two runs cannot be
-compared without noticing the assumption. `--activate-lead-days 0` reproduces results from before
-this became the default.
+The report header states the lead, and each plan's exact activation day stays in the JSON
+(and in the strategy assumptions) — including travel day 0, meaning "the day before the trip
+starts" — so two runs cannot be compared without noticing the assumption. `--activate-lead-days 0`
+reproduces results from before this became the default.
 
 **Flying days are half-days, if you say they are.** A leg's transfer days (the `+N` in
 `--stop 'Country N +N'`, or a 0-day tail leg for a layover) used to mean *zero* data: real, but

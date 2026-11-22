@@ -204,8 +204,9 @@ assumptions test was re-pointed at the JSON-side data (`test_expanded_row_assump
     **validity only**: data need is a sum over served legs and the lead-in day is not one of them.
     The consequence is measured and counter-intuitive — tight short-validity plans are the cheap glue
     of many-purchase splits, so a longer lead moves the optimum to *fewer* eSIMs (sample trip: 5 → 4
-    → 3 as the lead goes 0 → 1 → 2). A negative activation day is valid output and renders as "the day
-    before the trip starts".
+    → 3 as the lead goes 0 → 1 → 2). A negative activation day is valid output; the human report
+    no longer prints per-plan activation lines (the header states the lead, the JSON and the
+    strategy assumptions carry the exact day).
 
 11. **An alternative must be described in the same detail as the answer.** `--show-purchases`
     expands "Cost of convenience" rows into install lists using `_buy_lines()`, the same helper the

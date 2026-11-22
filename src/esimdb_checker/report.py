@@ -226,7 +226,6 @@ def _buy_lines(report: Report, s: Strategy) -> list[str]:
     for i, sp in enumerate(s.plans, start=1):
         provider = sp.provider if hasattr(sp, "provider") else sp.plan.provider
         lines.append(f"  buy {i}. {sp.plan.name} — {provider}")
-        lines.append(f"      activate {_activation_text(sp, report)}")
         lines.append(f"      serves: {_sp_legs(sp, report)}")
         lines.append(f"      price: {_money(sp.cost, s.currency)}  ·  {_plan_bits(sp.plan)}")
     return lines
@@ -238,20 +237,6 @@ def _sp_legs(sp: StrategyPlan, report: Report) -> str:
         leg = report.trip.legs[idx]
         parts.append(f"{leg.country_name} (days {leg.start_day}–{leg.end_day})")
     return ", ".join(parts)
-
-
-def _activation_text(sp: StrategyPlan, report: Report) -> str:
-    first = report.trip.legs[sp.legs[0]]
-    day, lead = sp.activation_day, first.start_day - sp.activation_day
-    if day < 1:
-        when = f"the day before the trip starts (travel day {day})"
-    elif day == 1 and lead <= 0:
-        when = "at the start of the trip"
-    else:
-        when = f"travel day {day}"
-    gap = (f", {lead} day{'s' if lead != 1 else ''} before arrival to {first.country_name}"
-           if lead > 0 else "")
-    return f"{when}{gap}"
 
 
 def _activation_state(report: Report) -> str:
@@ -551,7 +536,7 @@ def render_markdown(report: Report, verbose: bool = False) -> str:
               f"{'_recommended_' if row.get('recommended') else ''}")
             for sp in s.plans:
                 w(f"- **{sp.plan.name}** — {sp.plan.provider}: {_money(sp.cost, s.currency)}, "
-                  f"activate {_activation_text(sp, report)}, serves {_sp_legs(sp, report)}, "
+                  f"serves {_sp_legs(sp, report)}, "
                   f"{_plan_bits(sp.plan)}")
             w("")
     w("## Recommendation")
@@ -568,7 +553,6 @@ def render_markdown(report: Report, verbose: bool = False) -> str:
         w("")
         for i, sp in enumerate(rec.plans, start=1):
             w(f"{i}. **{sp.plan.name}** — {sp.plan.provider}")
-            w(f"   - activate: {_activation_text(sp, report)}")
             w(f"   - serves: {_sp_legs(sp, report)}")
             w(f"   - price: {_money(sp.cost, rec.currency)} · {_plan_bits(sp.plan)}")
     bs = report.budget_status

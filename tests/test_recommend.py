@@ -564,7 +564,7 @@ def test_show_purchases_expands_a_row_without_changing_the_answer(tmp_path):
     # The row is described in the same detail as the recommendation, not as a name list.
     assert block.count("buy ") == 2
     assert "Europe 15GB/30Days" in block and "Japan 6GB/30Days" in block
-    assert "travel day" in block
+    assert "Japan (days 11–15)" in block
     # Reporting only: the recommendation and its own buy list are untouched.
     assert "RECOMMENDED" in after and "buy 3." in after.split("RECOMMENDED", 1)[1]
     prefix = "  buy "
@@ -838,9 +838,8 @@ def test_activation_lead_days_defaults_to_installing_the_day_before(tmp_path):
     line = next(ln for ln in console.splitlines() if ln.startswith("Itinerary:"))
     assert "activation: 1 day before the first arrival each plan serves" in line
     assert default.recommended.plans[0].activation_day == 0
-    # Travel day 0 means "before the trip starts" - the report has to say that rather than
-    # point at a day the itinerary does not have.
-    assert "day before the trip starts" in console
+    # Travel day 0 means "before the trip starts" - the data says so explicitly.
+    assert any("travel day 0" in a for a in default.recommended.plans[0].assumptions)
 
     # 0 is still reachable, and it is the only way to reproduce pre-2026-11 numbers.
     arrival = _run(tmp_path, payloads, trip, activate_lead_days=0)

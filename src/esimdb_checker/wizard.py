@@ -1169,7 +1169,7 @@ if _TEXTUAL:
         # -- results (post-search browsing) -------------------------------
         def _render_results(self) -> None:
             self._close_input()
-            from .report import _activation_text, _frontier_lines, _money, _sp_legs
+            from .report import _frontier_lines, _money, _sp_legs
             report = self._report
             if self._detail_rung is None:
                 head = ["Search finished - the cost of each number of eSIMs", ""]
@@ -1195,14 +1195,12 @@ if _TEXTUAL:
             t.add_column("#", justify="right", width=3)
             t.add_column("Plan", overflow="fold")
             t.add_column("Cost", justify="right")
-            t.add_column("Activate")
             for i, sp in enumerate(s.plans, start=1):
                 t.add_row(
                     str(i),
                     Text(f"{sp.plan.name} — {sp.plan.provider}\n"
                          f"serves: {_sp_legs(sp, report)}"),
                     _money(sp.cost, s.currency),
-                    _activation_text(sp, report),
                 )
             # Purchase links on their own lines: intact and copyable, never elided.
             links = ["Purchase links:"]
