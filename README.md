@@ -281,7 +281,7 @@ Fewest that work: 1 eSIM for £24.90 (+126.6% vs cheapest)
 │ eSIMs │ Total  │ vs cheapest │ What it buys                │
 ├───────┼────────┼─────────────┼─────────────────────────────┤
 │     1 │ £24.90 │     +126.6% │ Astaroam 50 GB/90d          │
-│     2 │ £13.73 │      +24.9% │ Asia 30GB + Taiwan 5GB/5d   │
+│     2 │ £13.73 │      +24.9% │ regional + local            │
 │     5 │ £10.99 │     cheapest │ ▸ locals for all 5 stays   │
 └───────┴────────┴─────────────┴─────────────────────────────┘
   (▸ = recommended)
@@ -312,13 +312,16 @@ recommended; a count nothing feasible buys is an error naming the counts that do
 it is an explicit request, and the compact ladder table above the blocks already shows how
 many rungs there are.
 
-**The default report is the answer, not the audit trail.** Itinerary, the ladder table, the
-named buy lists (with `--show-purchases`), and the recommendation. The audit trail —
-diagnostics (filtered/excluded plans, near-misses, cheaper-looking alternatives), the
-speed-cap handling status, provenance notes, snapshot hashes, and the no-budget line — is
-restored with `--verbose`, for console and Markdown alike. The verification assumptions
-(activation timing, validity span, any accepted speed cap) are no longer printed at all in
-console/Markdown: they remain in the JSON record, where a machine can check them.
+**The default report is the answer, not the audit trail.** The legs table, the ladder
+(every multi-plan rung labelled by shape — `regional + local`, `2 locals + regional` —
+rather than a string of product names), the named buy lists (with `--show-purchases`,
+one dotted line per plan: serves · price · data · days), and the recommendation. The
+audit trail — the itinerary parameter bullets, diagnostics (filtered/excluded plans,
+near-misses, cheaper-looking alternatives), the speed-cap handling status, provenance
+notes, snapshot hashes, and the no-budget line — is restored with `--verbose`, for console
+and Markdown alike. The verification assumptions (activation timing, validity span, any
+accepted speed cap) are no longer printed at all in console/Markdown: they remain in the
+JSON record, where a machine can check them.
 
 ```bash
 esimdb-checker recommend --itinerary trip.json --verbose   # the full report again

@@ -109,19 +109,25 @@ opt-in.
 What changed, all in one commit:
 
 - **`--verbose`** (shared output arg, `recommend` + `recommend-wizard`): console and Markdown
-  now skip diagnostics, speed-cap status, provenance/notes/snapshots, and the
-  "Budget: none specified." line by default; `--verbose` restores them. JSON is always
-  complete — it is the machine record, and pruning it would change the schema.
+  now skip the itinerary parameter bullets, diagnostics, speed-cap status,
+  provenance/notes/snapshots, and the "Budget: none specified." line by default;
+  `--verbose` restores them. JSON is always complete — it is the machine record, and
+  pruning it would change the schema.
 - **Verification assumptions are no longer printed** in console/Markdown (recommendation
   block and `--show-purchases` rows alike); they stay in the JSON (`strategies.*.assumptions`,
-  `purchase_frontier` plans) and the speed-cap warning still sits on the plan's price line via
-  `_plan_bits`.
+  `purchase_frontier` plans) and the speed-cap warning still sits on the plan's detail line
+  via `_plan_bits`.
 - **The family comparison table is gone** — redundant: every ladder rung already says what it
   buys, and the new table carries a "What it buys" column (`_buys_summary`: single plan →
-  provider + capacity/validity; a few plans → their names; local-only → "locals for all N
-  stays"). The recommended rung is marked `▸` with a legend line.
+  provider + capacity/validity; multi-plan rungs → their shape, `regional + local`,
+  `2 locals + regional` — regional = one plan spanning several legs — not a string of
+  product names; local-only → "locals for all N stays"). The recommended rung is marked `▸`
+  with a legend line.
 - **The ladder is now a boxed table** (`_frontier_table`, hand-rolled box-drawing, fixed
   column widths) — the same text the TUI shows. The "Fewest that work" line stays above it.
+  Buy-list plans are one dotted line each (serves · price · data · days), and the old long
+  "Itinerary:" summary line is now bullet points under `--verbose` (the legs table stays
+  in the default output).
 - **The TUI no longer exits after the search.** `_search_finished` enters a `results` mode
   when the report has a ladder: the ladder page (same boxed table, rungs listed as options at
   the bottom), `1..N` opens a detail page — a rich table per SIM (plan, cost, activation,
