@@ -237,7 +237,7 @@ def test_transfer_data_flag_reaches_the_report(tmp_path, capsys):
     assert data["itinerary"]["transfer_data"] == 0.5
     assert data["itinerary"]["required_gb"] == 4.5      # 4 days + half a flying day
 
-    rc, out = go("--transfer-data", "0.5")
+    rc, out = go("--transfer-data", "0.5", "--verbose")
     assert rc == 0
     assert "flying days: 0.5x the daily data need" in out.out
     assert "4.5 GB" in out.out

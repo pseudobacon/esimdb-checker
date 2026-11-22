@@ -48,18 +48,28 @@ def _plan_bits(plan) -> str:
     return " · ".join(bits)
 
 
-def _itinerary_lines(report: Report) -> list[str]:
+def _itinerary_summary_lines(report: Report) -> list[str]:
+    """The trip's parameters as bullet points (verbose output only)."""
     it = report.trip
-    lines = [
-        f"Itinerary: {it.total_days} charged day(s) over {it.span_days} travel day(s), "
-        f"{_gb(it.required_gb)} GB required, "
-        f"currency {it.currency}"
-        + (f", budget {_money(it.budget, it.currency)}" if it.budget is not None else ", no budget")
-        + f", speed-capped: {_cap_state(report)}"
-        + _activation_state(report)
-        + _transfer_state(report)
-    ]
-    lines.append(f"  {'Destination':<22} {'Days':>5}  {'Travel days':>12}  {'Required data':>14}")
+    lines = ["Itinerary:",
+             f"  • {it.total_days} charged day(s) over {it.span_days} travel day(s), "
+             f"{_gb(it.required_gb)} GB required",
+             f"  • currency {it.currency}"
+             + (f", budget {_money(it.budget, it.currency)}" if it.budget is not None
+                else ", no budget"),
+             f"  • speed caps: {_cap_state(report)}"]
+    state = _activation_state(report).lstrip(", ")
+    if state:
+        lines.append(f"  • {state}")
+    state = _transfer_state(report).lstrip(", ")
+    if state:
+        lines.append(f"  • {state}")
+    return lines
+
+
+def _itinerary_table_lines(report: Report) -> list[str]:
+    it = report.trip
+    lines = [f"  {'Destination':<22} {'Days':>5}  {'Travel days':>12}  {'Required data':>14}"]
     for leg in it.legs:
         lines.append(
             f"  {leg.country_name:<22} {leg.days:>5}  "
@@ -151,7 +161,12 @@ def _frontier_table(report: Report) -> list[str]:
 
 
 def _buys_summary(s: Strategy, report: Report) -> str:
-    """A short 'what this rung buys' label for the ladder table."""
+    """A short 'what this rung buys' label for the ladder table.
+
+    Single-plan rungs name the plan; multi-plan rungs describe the shape
+    (regional = one plan spanning several legs, local = one per leg) rather
+    than listing product names, which run too long for a table cell.
+    """
     n = len(s.plans)
     if s.family == "local_only":
         stays = sum(1 for leg in report.trip.legs if leg.days > 0)
@@ -160,11 +175,12 @@ def _buys_summary(s: Strategy, report: Report) -> str:
         p = s.plans[0].plan
         period = f"/{p.period_days}d" if p.period_days else ""
         return f"{p.provider} {p.capacity_label()}{period}"
-    if n <= 3:
-        short = [name if len(name) <= 24 else name[:23] + "…"
-                 for name in (sp.plan.name for sp in s.plans)]
-        return " + ".join(short)
-    return f"{n} plans (regional + locals)"
+    counts: dict[str, int] = {}
+    for sp in s.plans:
+        kind = "regional" if len(sp.legs) > 1 else "local"
+        counts[kind] = counts.get(kind, 0) + 1
+    parts = [f"{c} {kind}s" if c > 1 else kind for kind, c in counts.items()]
+    return " + ".join(parts)
 
 
 def _expanded_rows(report: Report) -> list[str]:
@@ -219,8 +235,8 @@ def _buy_lines(report: Report, s: Strategy) -> list[str]:
     for i, sp in enumerate(s.plans, start=1):
         provider = sp.provider if hasattr(sp, "provider") else sp.plan.provider
         lines.append(f"  buy {i}. {sp.plan.name} — {provider}")
-        lines.append(f"      serves: {_sp_legs(sp, report)}")
-        lines.append(f"      price: {_money(sp.cost, s.currency)}  ·  {_plan_bits(sp.plan)}")
+        detail = f"{_sp_legs(sp, report)} · {_money(sp.cost, s.currency)} · {_plan_bits(sp.plan)}"
+        lines.append(f"      {detail}")
     return lines
 
 
@@ -439,15 +455,19 @@ def _provenance_lines(report: Report) -> list[str]:
 def render_console(report: Report, verbose: bool = False) -> str:
     """The default report: the answer, not the audit trail.
 
-    Itinerary, the ladder table, the expanded rows (if --show-purchases), the
-    recommendation, and the budget line when a budget was given. With ``verbose``,
-    the audit trail comes back: diagnostics, speed-cap status, provenance/notes,
-    snapshots, and the no-budget note.
+    The legs table, the ladder table, the expanded rows (if --show-purchases),
+    the recommendation, and the budget line when a budget was given. With
+    ``verbose``, the audit trail comes back: the itinerary parameter bullets,
+    diagnostics, speed-cap status, provenance/notes, snapshots, and the
+    no-budget note.
     """
     lines: list[str] = []
     lines.append("eSIM strategy recommendation")
     lines.append("=" * 78)
-    lines.extend(_itinerary_lines(report))
+    if verbose:
+        lines.extend(_itinerary_summary_lines(report))
+        lines.append("")
+    lines.extend(_itinerary_table_lines(report))
     lines.append("")
     lines.extend(_frontier_lines(report))
     lines.append("")

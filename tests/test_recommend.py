@@ -407,9 +407,9 @@ def test_transfer_days_are_included_in_the_reported_travel_day_span(tmp_path):
         trip,
     )
     assert rep.trip.total_days == 12 and rep.trip.span_days == 13
-    text = render_console(rep)
-    assert "12 charged day(s) over 13 travel day(s)" in text
-    assert "1–13" in text
+    # The charged/travel-day summary is a verbose bullet; the span stays in the table.
+    assert "12 charged day(s) over 13 travel day(s)" in render_console(rep, verbose=True)
+    assert "1–13" in render_console(rep)
 
 
 # ---------------------------------------------------------------------------
@@ -834,8 +834,8 @@ def test_activation_lead_days_defaults_to_installing_the_day_before(tmp_path):
 
     default = _run(tmp_path, payloads, trip)
     assert default.totals["activation_lead_days"] == 1
-    console = render_console(default)
-    line = next(ln for ln in console.splitlines() if ln.startswith("Itinerary:"))
+    console = render_console(default, verbose=True)
+    line = next(ln for ln in console.splitlines() if "activation:" in ln)
     assert "activation: 1 day before the first arrival each plan serves" in line
     assert default.recommended.plans[0].activation_day == 0
     # Travel day 0 means "before the trip starts" - the data says so explicitly.
@@ -850,4 +850,5 @@ def test_activation_lead_days_defaults_to_installing_the_day_before(tmp_path):
 
     two = _run(tmp_path, payloads, trip, activate_lead_days=2)
     assert two.recommended.plans[0].activation_day == -1
-    assert "activation: 2 days before the first arrival each plan serves" in render_console(two)
+    assert "activation: 2 days before the first arrival each plan serves" in \
+        render_console(two, verbose=True)
