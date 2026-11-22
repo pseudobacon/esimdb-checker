@@ -67,20 +67,39 @@ def _itinerary_summary_lines(report: Report) -> list[str]:
     return lines
 
 
+def _boxed_table(headers: tuple[str, ...], rows: list[tuple[str, ...]],
+                 right: tuple[int, ...] = (), footer: tuple[str, ...] | None = None) -> list[str]:
+    """A box-drawn table; columns in `right` are right-aligned, `footer` gets its own rule."""
+    widths = [max(len(headers[i]), *(len(r[i]) for r in rows)) for i in range(len(headers))]
+
+    def hline(left: str, mid: str, right: str) -> str:
+        return left + mid.join("─" * (w + 2) for w in widths) + right
+
+    def cells(t: tuple[str, ...]) -> str:
+        parts = []
+        for i, (c, w) in enumerate(zip(t, widths, strict=False)):
+            cell = f" {c} "
+            parts.append(cell.rjust(w + 2) if i in right else cell.ljust(w + 2))
+        return "│" + "│".join(parts) + "│"
+
+    out = [hline("┌", "┬", "┐"), cells(headers), hline("├", "┼", "┤")]
+    out.extend(cells(r) for r in rows)
+    if footer is not None:
+        out.append(hline("├", "┼", "┤"))
+        out.append(cells(footer))
+    out.append(hline("└", "┴", "┘"))
+    return out
+
+
 def _itinerary_table_lines(report: Report) -> list[str]:
     it = report.trip
-    lines = [f"  {'Destination':<22} {'Days':>5}  {'Travel days':>12}  {'Required data':>14}"]
-    for leg in it.legs:
-        lines.append(
-            f"  {leg.country_name:<22} {leg.days:>5}  "
-            f"{leg.travel_days_label():>12}  "
-            f"{_gb(leg.required_gb) + ' GB':>14}"
-        )
-    lines.append(
-        f"  {'TOTAL':<22} {it.total_days:>5}  {'1–' + str(it.span_days):>12}  "
-        f"{_gb(it.required_gb) + ' GB':>14}"
-    )
-    return lines
+    rows = [
+        (leg.country_name, str(leg.days), leg.travel_days_label(), f"{_gb(leg.required_gb)} GB")
+        for leg in it.legs
+    ]
+    footer = ("TOTAL", str(it.total_days), f"1–{it.span_days}", f"{_gb(it.required_gb)} GB")
+    return _boxed_table(("Destination", "Days", "Travel days", "Required data"),
+                        rows, right=(1, 2, 3), footer=footer)
 
 
 def _cap_state(report: Report) -> str:
@@ -129,7 +148,6 @@ def _frontier_table(report: Report) -> list[str]:
     rows = report.purchase_frontier
     if not rows:
         return []
-    head = ("eSIMs", "Total", "vs cheapest", "What it buys")
     data = []
     for r in rows:
         pct = r.get("vs_cheapest_pct")
@@ -141,21 +159,7 @@ def _frontier_table(report: Report) -> list[str]:
         if r.get("recommended"):
             buys = "▸ " + buys
         data.append((str(r["purchases"]), _money(r["total_cost"], r["currency"]), vs, buys))
-    widths = [max(len(head[i]), max(len(row[i]) for row in data)) for i in range(4)]
-
-    def hline(left: str, mid: str, right: str) -> str:
-        return left + mid.join("─" * (w + 2) for w in widths) + right
-
-    def cells(t: tuple[str, ...]) -> str:
-        parts = []
-        for i, (c, w) in enumerate(zip(t, widths, strict=False)):
-            cell = f" {c} "
-            parts.append(cell.rjust(w + 2) if i < 3 else cell.ljust(w + 2))
-        return "│" + "│".join(parts) + "│"
-
-    lines = [hline("┌", "┬", "┐"), cells(head), hline("├", "┼", "┤")]
-    lines.extend(cells(r) for r in data)
-    lines.append(hline("└", "┴", "┘"))
+    lines = _boxed_table(("eSIMs", "Total", "vs cheapest", "What it buys"), data, right=(1, 2))
     lines.append("  (▸ = recommended)")
     return lines
 
