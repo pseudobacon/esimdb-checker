@@ -155,6 +155,7 @@ esimdb-checker fetch "https://esimdb.com/api/client/countries"
 | `--json` | print the full typed report as JSON to stdout | console text |
 | `--md` | write a Markdown report (with `--out`, default `report.md`) | — |
 | `--out FILE` | output file for `--md`, or for console text when `--md`/`--json` are absent; with `--json` also copies the JSON there while stdout stays clean | — |
+| `--verbose` | include the audit trail in console/markdown output: diagnostics, speed-cap status, provenance/notes, snapshots (JSON is always complete) | off |
 | `--save-itinerary FILE` | save the built itinerary to FILE (JSON) | — |
 | `--overwrite` | allow saving to overwrite an existing file | off |
 | `--refresh` | refetch even if a snapshot exists | cache on |
@@ -215,6 +216,16 @@ pseudo-terminal: the byte stream contains no mouse-tracking sequence).
 | `Alt+Left` | one step back, with every entered value kept (still bound; the hint line points at `Esc`) |
 | `Esc` | cancel the answer being typed → back a stage → cancel the wizard (twice on the first stage) |
 
+**After the search: the results page.** When the query finishes inside the interface, the
+screen does not come back to the shell: it shows the same ladder table the console report
+prints, with the rungs listed as options at the bottom. Pressing a rung's number (e.g. `2`)
+opens a detail page for that strategy — a table of each SIM with its cost, activation day,
+and the legs it serves, plus the purchase link for every plan on its own line — and from
+there `b`/`Esc` goes back to the ladder while `q` exits the wizard (the report is then
+printed to the terminal as usual). `q` on the ladder page does the same. If the search
+fails, or nothing feasible is found, there is nothing to browse and the wizard leaves as
+before.
+
 While an answer is being typed, letters, digits, arrows and `Backspace` edit the text:
 the list commands are inert until the answer is submitted or cancelled with `Esc`, so a
 destination containing `t` or `d` is typed normally. Overwriting an existing file is the one
@@ -251,8 +262,8 @@ that is not a menu word is resolved as a destination name, ISO code, or slug.
 ### Reading a recommendation
 
 `recommend` prices every number of eSIMs and recommends the cheapest feasible option
-(ranked in the requested currency). The strategy table names three families, which are
-labels over that ladder rather than three searches:
+(ranked in the requested currency). The three strategy families are labels over that
+ladder rather than three searches:
 
 - **whole-trip** (1 eSIM) — a single plan listed on every destination's page, activated once.
 - **hybrid** (2 to one-less-than-legs) — any other split, including two multi-destination
@@ -261,19 +272,22 @@ labels over that ladder rather than three searches:
   serve a window of it.
 - **local-only** (one per destination) — the cheapest feasible plan for each leg.
 
-The report also prices the rungs in between, so the price of not carrying five QR codes is
-visible instead of guessed:
+The report prices the rungs in between as one boxed table, so the price of not carrying
+five QR codes is visible instead of guessed (the recommended rung is marked `▸`):
 
 ```
-Cost of convenience (cheapest strategy for each number of eSIMs):
-   eSIMs       Total   vs cheapest  Family
-       1      £24.69        +43.4%  whole_trip
-       2      £18.63         +8.2%  hybrid
-       4      £17.21      cheapest  hybrid   <- recommended
-       6      £18.90         +9.8%  local_only
+Fewest that work: 1 eSIM for £24.90 (+126.6% vs cheapest)
+┌───────┬────────┬─────────────┬─────────────────────────────┐
+│ eSIMs │ Total  │ vs cheapest │ What it buys                │
+├───────┼────────┼─────────────┼─────────────────────────────┤
+│     1 │ £24.90 │     +126.6% │ Astaroam 50 GB/90d          │
+│     2 │ £13.73 │      +24.9% │ Asia 30GB + Taiwan 5GB/5d   │
+│     5 │ £10.99 │     cheapest │ ▸ locals for all 5 stays   │
+└───────┴────────┴─────────────┴─────────────────────────────┘
+  (▸ = recommended)
 ```
 
-That trip buys 4 eSIMs for £17.21 by default; two would cost £1.42 more. Ask for fewer:
+That trip buys 5 eSIMs for £10.99 by default; one would cost £13.91 more. Ask for fewer:
 
 ```bash
 esimdb-checker recommend --itinerary trip.json --fewer-sims       # fewest within 10% of cheapest
@@ -291,13 +305,24 @@ esimdb-checker recommend --itinerary trip.json --show-purchases all
 ```
 
 Each named row gets the same detail as the recommendation — plan, provider, install day, which
-legs it serves, price, data and validity, and the same verification assumptions (activation
-timing, validity span, any accepted speed cap) — because an alternative you are being asked to
+legs it serves, and price, data and validity — because an alternative you are being asked to
 weigh should not be described in less detail than the answer. It changes nothing about what is
 recommended; a count nothing feasible buys is an error naming the counts that do exist.
 `all` expands every rung and is deliberately not capped: unlike the capped diagnostics lists,
 it is an explicit request, and the compact ladder table above the blocks already shows how
 many rungs there are.
+
+**The default report is the answer, not the audit trail.** Itinerary, the ladder table, the
+named buy lists (with `--show-purchases`), and the recommendation. The audit trail —
+diagnostics (filtered/excluded plans, near-misses, cheaper-looking alternatives), the
+speed-cap handling status, provenance notes, snapshot hashes, and the no-budget line — is
+restored with `--verbose`, for console and Markdown alike. The verification assumptions
+(activation timing, validity span, any accepted speed cap) are no longer printed at all in
+console/Markdown: they remain in the JSON record, where a machine can check them.
+
+```bash
+esimdb-checker recommend --itinerary trip.json --verbose   # the full report again
+```
 
 **Installing before you fly is the model, and it changes the answer.** An eSIM needs internet to
 install and arrival does not guarantee any, so a plan is assumed to be installed the day before
@@ -407,7 +432,7 @@ stderr). The fields added for the ladder and for `--show-purchases`:
 ## Testing
 
 ```bash
-uv run pytest                 # 210 offline tests (mocked API + headless TUI), no network
+uv run pytest                 # 212 offline tests (mocked API + headless TUI), no network
 uv run ruff check .           # lint - clean, exit 0
 ```
 

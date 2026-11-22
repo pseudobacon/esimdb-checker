@@ -200,7 +200,7 @@ def test_plans_below_the_data_need_are_filtered_not_listed(tmp_path):
     d = rep.diagnostics
     assert d["excluded_always_throttled"] == []   # not a candidate -> never a cap row
     assert d["data_insufficient_filtered"] == 1
-    text = render_console(rep)
+    text = render_console(rep, verbose=True)
     assert "Spain 1 Day / Daily 500MB" not in text
     assert "filtered before ranking (data below this trip's need): 1" in text
 
@@ -221,7 +221,7 @@ def test_after_allowance_throttle_is_a_candidate_and_is_flagged(tmp_path):
     assert rep.recommended.plans[0].plan.id == "throttled"   # cheapest, and allowed
     assert rep.diagnostics["excluded_always_throttled"] == []
     assert rep.diagnostics["after_cap_admitted"] == 1
-    text = render_console(rep)
+    text = render_console(rep, verbose=True)
     assert "then 128 kbps after the allowance" in text        # flagged on its own row
     assert "kept as candidates: 1" in text
 
@@ -239,7 +239,7 @@ def test_strict_speed_cap_still_excludes_after_allowance_throttles(tmp_path):
     assert rep.recommended.plans[0].plan.id == "clean"
     assert rep.diagnostics["after_cap_excluded_strict"] == 1
     assert rep.diagnostics["after_cap_admitted"] == 0
-    assert "excluded by --strict-speed-cap: 1" in render_console(rep)
+    assert "excluded by --strict-speed-cap: 1" in render_console(rep, verbose=True)
 
 
 def test_cap_bucket_holds_only_the_plans_that_could_have_been_bought(tmp_path):
@@ -278,7 +278,7 @@ def test_exclusion_counts_are_totals_not_list_lengths(tmp_path):
     assert d["excluded_always_throttled_total"] == 25
     assert len(d["excluded_always_throttled"]) < 25
     assert rep.totals["always_throttled_excluded"] == 25    # not the 20-row list length
-    assert "… 5 more (20 shown)" in render_console(rep)
+    assert "… 5 more (20 shown)" in render_console(rep, verbose=True)
 
 
 def test_plan_names_are_unescaped_once_at_parse(tmp_path):
@@ -368,7 +368,7 @@ def test_calendar_only_multi_country_misses_are_named(tmp_path):
     assert "eu-20-3" in named
     assert "eu-25-30" not in named  # it serves the trip, so it is no kind of miss
     assert rep.diagnostics["regional_alternatives_total"] == 0
-    assert "not enough calendar" in render_console(rep)
+    assert "not enough calendar" in render_console(rep, verbose=True)
 
 
 def test_feasible_multi_leg_plans_that_werent_bought_are_still_listed(tmp_path):
@@ -489,7 +489,7 @@ def test_wide_trips_search_windows_and_say_so(tmp_path):
     rep = _run(tmp_path, [("spain", both), ("france", both)], trip)
     assert len(rep.trip.legs) == 10
     assert rep.totals["regional_scope_search"] == "contiguous_windows_for_wide_plans"
-    assert "contiguous travel windows" in render_console(rep)
+    assert "contiguous travel windows" in render_console(rep, verbose=True)
     # Contiguous windows still find the pair that a whole-set check would have rejected.
     hy = rep.strategies["hybrid"]
     assert hy is not None
@@ -544,7 +544,10 @@ def test_frontier_prices_every_number_of_esims(tmp_path):
     assert rows[2]["vs_cheapest_pct"] == pytest.approx(6.7)
     assert rows[3]["recommended"] is True
     assert rows[1]["recommended"] is False
-    assert "Cost of convenience" in render_console(rep)
+    # The ladder renders as the boxed table with a what-it-buys column.
+    text = render_console(rep)
+    assert "What it buys" in text and "│ eSIMs │" in text
+    assert "▸" in text  # the recommended rung is marked
 
 
 def test_show_purchases_expands_a_row_without_changing_the_answer(tmp_path):
@@ -585,23 +588,26 @@ def test_show_purchases_markdown_expands_the_same_rows(tmp_path):
     assert "**What 1 eSIM would buy**" in md and "**What 2 eSIMs would buy**" in md
     bullets = md.split("**What 1 eSIM would buy**", 1)[1].split("**What 2 eSIMs")[0]
     assert bullets.count("\n- **") == 1
-    # Same honesty as the console: the row's assumptions are listed, not just the plan bits.
-    assert "Verification assumptions:" in bullets
+    # The human report no longer carries the audit trail; the assumptions stay in the data.
+    assert "Verification assumptions:" not in md
+    assert rep.ladder_strategies[1].assumptions
 
 
-def test_expanded_row_carries_the_assumptions_it_runs_on(tmp_path):
-    """An alternative must state its own activation assumptions, exactly like the answer."""
+def test_expanded_row_assumptions_stay_in_the_data_not_the_output(tmp_path):
+    """The audit trail (activation assumptions) stays in the JSON; the output skips it."""
     trip = _trip([(ES, 5, 0), (FR, 5, 0), (JP, 5, 0)])
     rep = _run(tmp_path, _frontier_payloads(), trip)
     rep.totals["show_purchases"] = [2]
     text = render_console(rep)
     block = text.split("  What 2 eSIMs would buy", 1)[1].split("RECOMMENDED", 1)[0]
-    assert "verification assumptions:" in block
-    assert "activated on travel day 10, 1 day before arrival to Japan" in block
+    assert "verification assumptions:" not in block
+    assert "activated on travel day 10" not in text
+    s = rep.ladder_strategies[2]
+    assert any("activated on travel day 10" in a for a in s.assumptions)
 
 
 def test_expanded_row_discloses_an_accepted_speed_cap(tmp_path):
-    """A capped plan inside an expanded row states the acceptance, not only the ⚠ bit."""
+    """A capped plan inside an expanded row keeps its speed warning on the price line."""
     trip = _trip([(ES, 4, 0), (FR, 4, 0)], daily_data_gb=1.5)
     capped = entry("eu-cap", A, "Europe Daily 3GB", 3000, 30, 4.0,
                    data_cap_per="day", reduced_speed=128)
@@ -616,7 +622,6 @@ def test_expanded_row_discloses_an_accepted_speed_cap(tmp_path):
     rep.totals["show_purchases"] = [1]
     text = render_console(rep)
     block = text.split("  What 1 eSIM would buy", 1)[1].split("RECOMMENDED", 1)[0]
-    assert "accepted despite a speed cap" in block
     assert "128 kbps after the allowance" in block
 
 
@@ -661,7 +666,7 @@ def test_two_multi_country_plans_form_one_purchase_count(tmp_path):
     assert limited.recommended.purchase_count == 2
     assert limited.recommended.total_cost == pytest.approx(16.0)
     assert "at most 2 eSIMs" in " ".join(limited.notes)
-    assert "Cost of convenience" in render_console(limited)
+    assert "What it buys" in render_console(limited)
 
 
 def test_purchase_limit_that_nothing_fits_recommends_nothing(tmp_path):
@@ -680,7 +685,7 @@ def test_purchase_limit_that_nothing_fits_recommends_nothing(tmp_path):
     # ("found", not "possible": above the ceiling the split search is restricted.)
     assert "fewest purchases found" in " ".join(rep.notes)
     assert rep.purchase_policy["min_feasible_purchases"] == 2
-    assert "fewest purchases found" in render_console(rep)
+    assert "fewest purchases found" in render_console(rep, verbose=True)
 
 
 def test_fewer_sims_buys_convenience_within_a_tolerance(tmp_path):

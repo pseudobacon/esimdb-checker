@@ -95,8 +95,11 @@ stdout must stay machine-readable.
 question and the query, the CLI owns the rendering. The engine runs in a Textual worker
 thread so the alternate screen stays up while esimdb.com is being queried, with
 `RecommendationEngine.load(trip, progress)` reporting which destination it is fetching.
-The TUI still never renders the report: it exits first, so the report is printed once on
-the normal screen and remains visible in scrollback. `WizardResult` carries the `report` (so
+When the query finishes with a ladder, the TUI does not drop back to the shell: it shows the
+same boxed ladder table in a `results` mode, where each rung opens to a per-SIM detail page
+(cost, activation, legs served, purchase link) with back/exit keys, and the report is still
+printed once on the normal screen after the app exits. An error or a report without a ladder
+leaves immediately, as before. `WizardResult` carries the `report` (so
 `cmd_wizard` must not query twice) or a `search_error` (reported as a normal CLI error, never
 a traceback). Without a `search` callback — the plain front-end, and the TUI's fallback — the
 CLI runs the engine itself after the interview.

@@ -47,6 +47,9 @@ def _add_output_args(p: argparse.ArgumentParser) -> None:
                    help="write a Markdown report (to --out, default report.md)")
     p.add_argument("--out", default=None, metavar="PATH",
                    help="output file for --md (or the console text when --md/--json are absent)")
+    p.add_argument("--verbose", action="store_true",
+                   help="include the audit trail in console/markdown output: diagnostics, "
+                        "speed-cap status, provenance/notes, snapshots (JSON is always complete)")
 
 
 def _add_engine_args(p: argparse.ArgumentParser) -> None:
@@ -282,6 +285,7 @@ def _emit(report, args, err=None) -> None:
     wants_md = bool(getattr(args, "md", False))
     out = getattr(args, "out", None)
 
+    verbose = bool(getattr(args, "verbose", False))
     try:
         if wants_json:
             text = render_json(report)
@@ -294,15 +298,15 @@ def _emit(report, args, err=None) -> None:
             return
         if wants_md:
             path = Path(out) if out else Path("report.md")
-            _write(path, lambda: write_report(report, path, "markdown"))
+            _write(path, lambda: write_report(report, path, "markdown", verbose=verbose))
             print(f"wrote {path}", file=err)
             return
         if out:
             path = Path(out)
-            _write(path, lambda: write_report(report, path, "console"))
+            _write(path, lambda: write_report(report, path, "console", verbose=verbose))
             print(f"wrote {path}", file=err)
             return
-        print(render_console(report))
+        print(render_console(report, verbose=verbose))
     except OSError as e:
         _fail(f"could not write output file: {e}", 2)
 

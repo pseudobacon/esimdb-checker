@@ -139,9 +139,8 @@ def test_wizard_show_purchases_reaches_the_report(tmp_path, monkeypatch):
     assert rc == 0
     text = out.getvalue()
     assert "What 2 eSIMs would buy" in text
-    block = text.split("What 2 eSIMs would buy", 1)[1].split("RECOMMENDED", 1)[0]
-    # The row buys the same plan twice; that assumption must be stated, not just the bits.
-    assert "buys the same plan more than once" in block
+    # The row buys the same plan twice; the ladder row must say so, not just the bits.
+    assert "(one plan bought twice)" in text
 
     # A count nothing buys is still an error through the wizard, not a silent no-op.
     out, err = fake_tty(monkeypatch, WIZARD_ANSWERS)

@@ -17,7 +17,7 @@ day counts, data need, validity and budget. Research only — it never buys or a
 | --- | --- |
 | Package | `esimdb-checker` 0.1.0, `src/` layout, Python 3.10+, console script `esimdb-checker` |
 | Runtime deps | `httpx`, `textual` — **no browser, no Playwright at runtime** |
-| Tests | **210 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
+| Tests | **212 passing**, fully offline (respx-mocked API, Textual headless Pilot) |
 | Lint | `ruff check .` **clean, exit 0**. Pre-existing debt (174 findings at the baseline commit) swept in two passes — see DEVELOPMENT-LOG. |
 | Type check | none configured (`mypy` not installed, no config) |
 | CI | none |
@@ -94,10 +94,46 @@ The five loose ends from the first commit, all closed:
 5. **JSON shape documented** — README "The JSON report": `purchase_frontier` rows,
    `plans[].activation_day`, `totals.show_purchases`, `purchase_policy`.
 
-Verified: full suite offline — **202 tests, no failures, exit 0** — and `ruff check .` clean
+Verified: full suite offline — **212 tests, no failures, exit 0** — and `ruff check .` clean
 (run as `python -m pytest tests/ -p no:cacheprovider -q`; `pyproject.toml` also sets
 `addopts = "-q"`, and in a redirected run the "N passed" summary line was absent while every dot
 was printed — check the exit code, not the last line).
+
+## Output pruning, `--verbose`, boxed ladder, TUI results page — completed 2026-11-22
+
+The report had grown an audit trail (diagnostics, speed-cap status, provenance/notes,
+snapshots, per-strategy verification assumptions, a family table beside the ladder) that
+buried the answer. The user's rule: the default output is the answer; the audit trail is
+opt-in.
+
+What changed, all in one commit:
+
+- **`--verbose`** (shared output arg, `recommend` + `recommend-wizard`): console and Markdown
+  now skip diagnostics, speed-cap status, provenance/notes/snapshots, and the
+  "Budget: none specified." line by default; `--verbose` restores them. JSON is always
+  complete — it is the machine record, and pruning it would change the schema.
+- **Verification assumptions are no longer printed** in console/Markdown (recommendation
+  block and `--show-purchases` rows alike); they stay in the JSON (`strategies.*.assumptions`,
+  `purchase_frontier` plans) and the speed-cap warning still sits on the plan's price line via
+  `_plan_bits`.
+- **The family comparison table is gone** — redundant: every ladder rung already says what it
+  buys, and the new table carries a "What it buys" column (`_buys_summary`: single plan →
+  provider + capacity/validity; a few plans → their names; local-only → "locals for all N
+  stays"). The recommended rung is marked `▸` with a legend line.
+- **The ladder is now a boxed table** (`_frontier_table`, hand-rolled box-drawing, fixed
+  column widths) — the same text the TUI shows. The "Fewest that work" line stays above it.
+- **The TUI no longer exits after the search.** `_search_finished` enters a `results` mode
+  when the report has a ladder: the ladder page (same boxed table, rungs listed as options at
+  the bottom), `1..N` opens a detail page — a rich table per SIM (plan, cost, activation,
+  serves) with the purchase links on their own lines below (intact and copyable, never
+  elided) — `b`/`Esc` back, `q` exits with the completed result (the CLI then prints the
+  report). Error/no-feasible results leave immediately, as before. Ctrl+C on the results
+  pages closes the browser without overwriting the finished result with a cancellation.
+
+Tests: diagnostic-display assertions moved to `render_console(rep, verbose=True)`; the
+assumptions test was re-pointed at the JSON-side data (`test_expanded_row_assumptions_stay_in_the_data_not_the_output`);
+`tests/test_wizard_tui.py` gained two results-flow tests driving the real app headlessly
+(ladder → detail → back → exit, with a small real `Report` fixture).
 
 ## Where things live
 
@@ -108,8 +144,10 @@ was printed — check the exit code, not the last line).
 - `filters.py` — `speed_cap_signals` (always-throttled vs after-allowance), `purchasable`,
   `meets_data_need_for_days`.
 - `wizard.py` — Textual TUI + `--plain` fallback; both build the same `Trip`.
-- `report.py` — console / JSON / Markdown. `_diagnostics_lines()` is shared by console and
-  Markdown so the two renderers cannot disagree.
+- `report.py` — console / JSON / Markdown. `render_console`/`render_markdown` take `verbose`
+  (default off: the answer; verbose: the audit trail). `_diagnostics_lines()` is shared by
+  console and Markdown so the two renderers cannot disagree; `_frontier_table()` is the boxed
+  ladder the console and the TUI both show.
 - `itinerary.py`, `models.py` — itinerary model and validation (shared by wizard and CLI).
 
 ## Decisions worth inheriting
@@ -144,9 +182,10 @@ was printed — check the exit code, not the last line).
    (fewest within a tolerance, default 10%) are opt-in, and a limit nothing fits recommends
    nothing rather than quietly exceeding it. A split may buy the same SKU twice; that is legal
    and says so in the assumptions. See DEVELOPMENT-LOG 2026-11-22.
-8. **Provenance is part of the output.** Snapshots, SHA-256, fetch times and the FX rate are in
-   every report; `speed_filter_status.mode` always states `local_predicate` vs
-   `verified_site_toggle` honestly.
+8. **Provenance is part of the record.** Snapshots, SHA-256, fetch times and the FX rate are in
+   every report's JSON, and `speed_filter_status.mode` always states `local_predicate` vs
+   `verified_site_toggle` honestly. In the human output they are the audit trail: shown with
+   `--verbose`, not in the default answer (see the 2026-11-22 section above).
 9. **The convenience tolerance and the budget have a stated order of precedence.** `--fewer-sims`
     measures its tolerance against the *unrestricted* cheapest total even when `--max-purchases`
     binds — if nothing inside the limit is within tolerance, the rule becomes `fewest_within_limit`
@@ -187,6 +226,14 @@ was printed — check the exit code, not the last line).
     (`Taiwan 3.7`) were rejected: they would break the integer day model activation and validity are
     built on. Default 0 keeps every existing report identical; the fraction is saved in itinerary
     files and round-trips. See DEVELOPMENT-LOG 2026-11-22 ("Flying days are half-days").
+13. **The default report is the answer, not the audit trail.** Console/Markdown print the
+    itinerary, the boxed ladder (with a what-it-buys column and a `▸` on the recommended rung),
+    the named buy lists, and the recommendation. Diagnostics, speed-cap status, provenance,
+    snapshots, and the no-budget line come back with `--verbose`; the verification assumptions
+    are never printed anymore — they live in the JSON, where a machine can check them. The
+    per-family table was deleted as redundant with the ladder. The TUI shows the same ladder
+    in place after the search, with each rung openable to a per-SIM detail page (cost,
+    activation, purchase link) and back/exit keys.
 
 ## Known debt / open items
 

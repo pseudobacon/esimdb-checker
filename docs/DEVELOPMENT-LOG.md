@@ -5,6 +5,49 @@ the current-state snapshot is in [HANDOFF.md](HANDOFF.md).
 
 ---
 
+## 2026-11-22 — The report had grown an audit trail; the answer went under it
+
+The default console output carried everything: diagnostics, the speed-cap status block,
+provenance/notes, snapshot hashes, a family table beside the ladder, per-strategy
+verification assumptions, and a "Budget: none specified." line. The answer — the ladder and
+the recommendation — was a minority of what was printed. The ask: the default output is the
+answer; the audit trail is opt-in; the ladder becomes the boxed table; and the TUI shows the
+results in place instead of dropping back to the shell.
+
+- **`--verbose`** (shared output arg, both commands): console and Markdown skip diagnostics,
+  speed-cap status, provenance/notes/snapshots, and the no-budget line by default; the flag
+  restores them. JSON is deliberately untouched — it is the machine record, and pruning it
+  would change the schema.
+- **Verification assumptions are no longer printed** in console/Markdown (recommendation and
+  `--show-purchases` rows alike). They remain in the JSON, and the speed-cap warning still sits
+  on the plan's price line via `_plan_bits`, so a capped plan is never silently cleaner than it
+  is. The now-unused `_strategy_detail_lines` helper was deleted.
+- **The family table is gone** — redundant: every ladder rung says what it buys, and the new
+  table carries a "What it buys" column (`_buys_summary`: one plan → provider + capacity/validity;
+  a few → their names; local-only → "locals for all N stays"). The recommended rung is marked
+  `▸` with a legend, because with `--fewer-sims`/`--max-purchases` the recommended rung is not
+  always the cheapest one.
+- **The ladder renders as a boxed table** (`_frontier_table`, hand-rolled box-drawing, fixed
+  widths, deterministic for tests). The "Fewest that work" line stays above it. A recommendation
+  with no budget set no longer prints "budget: within n/a".
+- **The TUI stays open after the search.** `_search_finished` enters a `results` mode when the
+  report has a ladder: the ladder page lists the rungs as options; `1..N` opens a detail page —
+  a per-SIM table (plan, cost, activation, legs served) with every purchase link on its own line
+  below the table (intact and copyable; an elided purchase link is a dead link) — `b`/`Esc` goes
+  back, `q` exits with the completed result and the CLI prints the report. Error or
+  nothing-feasible results leave immediately as before; Ctrl+C on the results pages closes the
+  browser without overwriting the finished result with a cancellation.
+
+Tests: the diagnostic-display assertions moved to `render_console(rep, verbose=True)` (they test
+the audit trail, which is now verbose-only); the assumptions test was re-pointed at the data
+side (`…_stay_in_the_data_not_the_output`); `tests/test_wizard_tui.py` gained two results-flow
+tests driving the real app headlessly with a small real `Report` fixture (ladder → detail →
+back → exit, Esc-back, stray keys inert).
+
+`pytest` 212 passed (2 new TUI tests, 12 re-pointed), `ruff check .` clean, offline.
+
+---
+
 ## 2026-11-22 — Flying days are half-days: `--transfer-data`
 
 Same trip as the runs above. The model knew two kinds of day — a charged day (full daily need)

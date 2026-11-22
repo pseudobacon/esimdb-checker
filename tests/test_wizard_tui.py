@@ -867,3 +867,148 @@ def test_the_review_hint_lists_only_what_review_can_do():
             for gone in ("a add", "e edit", "d delete", "u undo", "select"):
                 assert gone not in hint, hint
     run(scenario())
+
+
+# --------------------------------------------------------------------------
+# results browsing: the ladder page, a strategy's detail page, back and exit
+# --------------------------------------------------------------------------
+def _fake_results_report():
+    """A small but real Report: a two-leg trip with 1- and 2-purchase rungs."""
+    from esimdb_checker.itinerary import build_trip
+    from esimdb_checker.models import Country, Plan, Report, Strategy, StrategyPlan
+
+    es = Country(code="ES", name="Spain", slug="spain", region="europe")
+    fr = Country(code="FR", name="France", slug="france", region="europe")
+    trip = build_trip([(es, 4, 0), (fr, 6, 0)], daily_data_gb=1.5, currency="EUR")
+
+    glob_plan = Plan(id="g", name="Europe 20GB/30Days", provider="GlobSim",
+                     provider_slug="globsim", prices={"EUR": 25.0},
+                     capacity_mb=20000, period_days=30)
+    es_plan = Plan(id="es", name="Spain 6GB/30Days", provider="EspSim",
+                   provider_slug="espsim", prices={"EUR": 5.0},
+                   capacity_mb=6000, period_days=30)
+    fr_plan = Plan(id="fr", name="France 6GB/30Days", provider="FraSim",
+                   provider_slug="frasim", prices={"EUR": 5.0},
+                   capacity_mb=6000, period_days=30)
+
+    whole = Strategy(
+        family="whole_trip",
+        plans=(StrategyPlan(plan=glob_plan, legs=(0, 1), activation_day=0,
+                            cost=25.0, comparable=True,
+                            url="https://esimdb.com/p/globsim/europe-20"),),
+        total_cost=25.0, currency="EUR", comparable=True, meets_data=True,
+        validity_ok=True,
+    )
+    locals_ = Strategy(
+        family="local_only",
+        plans=(
+            StrategyPlan(plan=es_plan, legs=(0,), activation_day=0, cost=5.0,
+                         comparable=True, url="https://esimdb.com/p/espsim/spain-6"),
+            StrategyPlan(plan=fr_plan, legs=(1,), activation_day=4, cost=5.0,
+                         comparable=True, url="https://esimdb.com/p/frasim/france-6"),
+        ),
+        total_cost=10.0, currency="EUR", comparable=True, meets_data=True,
+        validity_ok=True,
+    )
+    frontier = [
+        {"purchases": 1, "total_cost": 25.0, "currency": "EUR",
+         "vs_cheapest_pct": 150.0, "family": "whole_trip",
+         "recommended": False, "buys_same_plan_twice": False,
+         "plans": [{"name": "Europe 20GB/30Days", "provider": "GlobSim",
+                    "price": 25.0, "currency": "EUR", "legs": ["Spain", "France"]}]},
+        {"purchases": 2, "total_cost": 10.0, "currency": "EUR",
+         "vs_cheapest_pct": 0.0, "family": "local_only",
+         "recommended": True, "buys_same_plan_twice": False,
+         "plans": [{"name": "Spain 6GB/30Days", "provider": "EspSim",
+                    "price": 5.0, "currency": "EUR", "legs": ["Spain"]},
+                   {"name": "France 6GB/30Days", "provider": "FraSim",
+                    "price": 5.0, "currency": "EUR", "legs": ["France"]}]},
+    ]
+    return Report(
+        trip=trip, generated_at="2026-01-01T00:00:00+00:00", source_urls=[],
+        snapshot_manifest={}, fx={"base": "USD", "currency": "EUR", "rate": 1.0,
+                                  "source": "test", "date": "2026-01-01"},
+        recommended=locals_, strategies={"local_only": locals_, "whole_trip": whole,
+                                         "hybrid": None},
+        budget_status={"budget": None, "within_original": True},
+        diagnostics={}, totals={}, speed_filter_status={}, notes=[],
+        purchase_frontier=frontier, purchase_policy={"rule": "cheapest"},
+        ladder_strategies={1: whole, 2: locals_},
+    )
+
+
+def rendered(app, widget_id: str) -> str:
+    """A widget's content as terminal text (works for plain Text and rich tables)."""
+    from rich.console import Console
+    r = app.query_one(f"#{widget_id}", Static).content
+    console = Console(width=100, force_terminal=False)
+    with console.capture() as cap:
+        console.print(r)
+    return cap.get()
+
+
+def test_results_flow_ladder_detail_back_exit():
+    """After the search the TUI shows the ladder; 1..N opens a strategy's detail;
+    b goes back; q exits keeping the completed result."""
+    rep = _fake_results_report()
+
+    def fake_search(trip, progress):
+        return rep
+
+    async def scenario():
+        app = WizardApp(make_geo(), WizardState(), None, False, search=fake_search)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await to_review(pilot, legs=(("spain", "4"), ("france", "6")))
+            await press(pilot, "enter")                      # searches directly
+            for _ in range(100):
+                await pilot.pause(0.05)
+                if app.mode == "results":
+                    break
+            assert app.mode == "results", f"mode={app.mode} body={body_text(app)}"
+            body = rendered(app, "body")
+            assert "What it buys" in body and "│ eSIMs │" in body
+            assert "open a strategy" in hint_text(app)
+            # Open the whole-trip rung: its plan, cost and purchase link appear.
+            await press(pilot, "1")
+            body = rendered(app, "body")
+            assert "Europe 20GB/30Days" in body
+            assert "€25" in body
+            assert "https://esimdb.com/p/globsim/europe-20" in body
+            assert "back to the ladder" in hint_text(app)
+            # b returns to the ladder page.
+            await press(pilot, "b")
+            assert "What it buys" in rendered(app, "body")
+            # q exits the interface with the completed result intact.
+            await press(pilot, "q")
+            assert app.result is not None
+            assert app.result.report is rep and not app.result.cancelled
+    run(scenario())
+
+
+def test_results_detail_accepts_escape_back_and_unknown_keys_are_ignored():
+    """Esc also goes back from the detail page; stray keys never leave results."""
+    rep = _fake_results_report()
+
+    def fake_search(trip, progress):
+        return rep
+
+    async def scenario():
+        app = WizardApp(make_geo(), WizardState(), None, False, search=fake_search)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await to_review(pilot, legs=(("spain", "4"), ("france", "6")))
+            await press(pilot, "enter")
+            for _ in range(100):
+                await pilot.pause(0.05)
+                if app.mode == "results":
+                    break
+            assert app.mode == "results"
+            await press(pilot, "2")                          # detail for the 2-eSIM rung
+            assert "Spain 6GB/30Days" in rendered(app, "body")
+            await press(pilot, "escape")
+            assert "What it buys" in rendered(app, "body")
+            # On the ladder page a stray key changes nothing.
+            await press(pilot, "x")
+            assert app.mode == "results" and app._detail_rung is None
+    run(scenario())

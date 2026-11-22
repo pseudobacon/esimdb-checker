@@ -84,50 +84,16 @@ def _cap_state(report: Report) -> str:
     return "always-throttled excluded, after-allowance caps allowed"
 
 
-def _strategy_table_lines(report: Report) -> list[str]:
-    lines = ["Strategy comparison (cheapest feasible per family, ranked by requested currency):"]
-    lines.append(
-        f"  {'Family':<12} {'Total':>12} {'Purchases':>10} {'Data':>6} {'Validity':>10}  Feasible"
-    )
-    order = ["local_only", "whole_trip", "hybrid"]
-    any_row = False
-    for fam in order:
-        s = report.strategies.get(fam)
-        if s is None:
-            lines.append(f"  {fam:<12} {'—':>12} {'—':>10} {'—':>6} {'—':>10}  infeasible")
-            continue
-        any_row = True
-        cost = _money(s.total_cost, s.currency)
-        valid = "ok" if s.validity_ok else "unverified"
-        lines.append(
-            f"  {fam:<12} {cost:>12} {s.purchase_count:>10} {'ok':>6} {valid:>10}  yes"
-        )
-    if not any_row:
-        lines.append("  (no feasible strategy in any family)")
-    return lines
-
-
 def _frontier_lines(report: Report) -> list[str]:
     """The purchase-count trade-off: what each number of eSIMs costs.
 
-    The strategy table prices one winner per family, so the cost of convenience was
-    guesswork: a whole-trip plan and a five-plan split both appeared, but nothing said
-    what *two* plans would cost. This is that ladder, cheapest at each rung.
+    Rendered as one boxed table - the per-family strategy table used to sit beside it,
+    but every rung already says what it buys, so the family table was redundant.
     """
     rows = report.purchase_frontier
     if not rows:
         return []
-    lines = ["Cost of convenience (cheapest strategy for each number of eSIMs):"]
-    lines.append(f"  {'eSIMs':>6}  {'Total':>10}  {'vs cheapest':>12}  Family")
-    for r in rows:
-        pct = r.get("vs_cheapest_pct")
-        vs = "cheapest" if pct is None or abs(pct) < 0.05 else f"+{pct:.1f}%"
-        twice = "  (buys one plan twice)" if r.get("buys_same_plan_twice") else ""
-        lines.append(
-            f"  {r['purchases']:>6}  {_money(r['total_cost'], r['currency']):>10}"
-            f"  {vs:>12}  {r['family']}{twice}"
-            f"{'   <- recommended' if r.get('recommended') else ''}"
-        )
+    lines: list[str] = []
     chosen = next((r for r in rows if r.get("recommended")), None)
     fewest = rows[0]
     if chosen is not None and fewest["purchases"] < chosen["purchases"]:
@@ -139,12 +105,73 @@ def _frontier_lines(report: Report) -> list[str]:
             for p in fewest["plans"]
         )
         lines.append(
-            f"  Fewest that work: {n} eSIM{'s' if n != 1 else ''} for "
+            f"Fewest that work: {n} eSIM{'s' if n != 1 else ''} for "
             f"{_money(fewest['total_cost'], fewest['currency'])} (+{pct:.1f}% vs cheapest)"
         )
-        lines.append(f"    {plans}")
+        lines.append(f"  {plans}")
+    lines.extend(_frontier_table(report))
     lines.extend(_expanded_rows(report))
     return lines
+
+
+def _frontier_table(report: Report) -> list[str]:
+    """The boxed ladder: eSIMs | Total | vs cheapest | what it buys."""
+    rows = report.purchase_frontier
+    if not rows:
+        return []
+    head = ("eSIMs", "Total", "vs cheapest", "What it buys")
+    data = []
+    for r in rows:
+        pct = r.get("vs_cheapest_pct")
+        vs = "cheapest" if pct is None or abs(pct) < 0.05 else f"+{pct:.1f}%"
+        s = report.ladder_strategies.get(r["purchases"])
+        buys = _buys_summary(s, report) if s is not None else "—"
+        if r.get("buys_same_plan_twice"):
+            buys += " (one plan bought twice)"
+        if r.get("recommended"):
+            buys = "▸ " + buys
+        data.append((str(r["purchases"]), _money(r["total_cost"], r["currency"]), vs, buys))
+    widths = [max(len(head[i]), max(len(row[i]) for row in data)) for i in range(4)]
+
+    def hline(left: str, mid: str, right: str) -> str:
+        return left + mid.join("─" * (w + 2) for w in widths) + right
+
+    def cells(t: tuple[str, ...]) -> str:
+        parts = []
+        for i, (c, w) in enumerate(zip(t, widths, strict=False)):
+            cell = f" {c} "
+            parts.append(cell.rjust(w + 2) if i < 3 else cell.ljust(w + 2))
+        return "│" + "│".join(parts) + "│"
+
+    lines = [hline("┌", "┬", "┐"), cells(head), hline("├", "┼", "┤")]
+    lines.extend(cells(r) for r in data)
+    lines.append(hline("└", "┴", "┘"))
+    lines.append("  (▸ = recommended)")
+    return lines
+
+
+def _buys_summary(s: Strategy, report: Report) -> str:
+    """A short 'what this rung buys' label for the ladder table."""
+    n = len(s.plans)
+    if s.family == "local_only":
+        stays = sum(1 for leg in report.trip.legs if leg.days > 0)
+        return f"locals for all {n} stays" if n == stays else f"{n} local plans"
+    if n == 1:
+        p = s.plans[0].plan
+        if p.unlimited:
+            cap = "unlimited"
+        elif p.is_daily_refill():
+            cap = f"{p.capacity_mb / 1000:g} GB/day"
+        else:
+            g = p.capacity_mb / 1000  # base-1000, the way the site labels plans
+            cap = f"{g:.0f} GB" if abs(g - round(g)) < 0.05 else f"{g:g} GB"
+        period = f"/{p.period_days}d" if p.period_days else ""
+        return f"{p.provider} {cap}{period}"
+    if n <= 3:
+        short = [name if len(name) <= 24 else name[:23] + "…"
+                 for name in (sp.plan.name for sp in s.plans)]
+        return " + ".join(short)
+    return f"{n} plans (regional + locals)"
 
 
 def _expanded_rows(report: Report) -> list[str]:
@@ -176,10 +203,6 @@ def _expanded_rows(report: Report) -> list[str]:
             f"({_money(row['total_cost'], row['currency'])}, {vs}){tag}:"
         )
         lines.extend(_buy_lines(report, s))
-        if s.assumptions:
-            lines.append("  verification assumptions:")
-            for a in s.assumptions:
-                lines.append(f"    • {a}")
     return lines
 
 
@@ -190,23 +213,6 @@ def _legs_label(strategy: Strategy, report: Report) -> str:
             leg = report.trip.legs[idx]
             parts.append(f"{leg.country_name} (days {leg.start_day}–{leg.end_day})")
     return ", ".join(parts)
-
-
-def _strategy_detail_lines(report: Report, s: Strategy, title: str) -> list[str]:
-    lines = [f"{title}"]
-    for i, sp in enumerate(s.plans, start=1):
-        activate_txt = _activation_text(sp, report)
-        lines.append(f"  {i}. {sp.plan.name} — {sp.plan.provider}")
-        lines.append(f"       activate: {activate_txt}")
-        served = _legs_label(s, report) if len(s.plans) == 1 else _sp_legs(sp, report)
-        lines.append(f"       serves: {served}")
-        price = _money(sp.cost, s.currency)
-        lines.append(f"       price: {price}  ·  {_plan_bits(sp.plan)}")
-    if s.assumptions:
-        lines.append("  verification assumptions:")
-        for a in s.assumptions:
-            lines.append(f"    • {a}")
-    return lines
 
 
 def _buy_lines(report: Report, s: Strategy) -> list[str]:
@@ -307,17 +313,13 @@ def _recommendation_lines(report: Report) -> list[str]:
                     f"  adds {_money(-diff, rec.currency)} vs {fam} "
                     f"({_money(s.total_cost, rec.currency)})"
                 )
-    if rec.assumptions:
-        lines.append("  verification assumptions:")
-        for a in rec.assumptions:
-            lines.append(f"    • {a}")
-    # budget
-    if bs.get("within_original"):
+    # budget (only when one was actually set - "within n/a" says nothing)
+    if bs.get("budget") is not None and bs.get("within_original"):
         lines.append(
             f"  budget: within {_money(bs['budget'], bs['currency'])} "
             f"(cost {_money(bs['cost'], bs['currency'])})"
         )
-    else:
+    elif bs.get("budget") is not None:
         lines.append(
             f"  budget: EXCEEDED — original {_money(bs['budget'], bs['currency'])}, "
             f"cost {_money(bs['cost'], bs['currency'])}"
@@ -456,29 +458,36 @@ def _provenance_lines(report: Report) -> list[str]:
     return lines
 
 
-def render_console(report: Report) -> str:
+def render_console(report: Report, verbose: bool = False) -> str:
+    """The default report: the answer, not the audit trail.
+
+    Itinerary, the ladder table, the expanded rows (if --show-purchases), the
+    recommendation, and the budget line when a budget was given. With ``verbose``,
+    the audit trail comes back: diagnostics, speed-cap status, provenance/notes,
+    snapshots, and the no-budget note.
+    """
     lines: list[str] = []
     lines.append("eSIM strategy recommendation")
     lines.append("=" * 78)
     lines.extend(_itinerary_lines(report))
     lines.append("")
-    lines.extend(_strategy_table_lines(report))
-    lines.append("")
     lines.extend(_frontier_lines(report))
     lines.append("")
     lines.extend(_recommendation_lines(report))
     lines.append("")
-    lines.extend(_budget_lines(report))
-    lines.append("")
-    lines.extend(_diagnostics_lines(report))
-    lines.append("")
-    lines.extend(_speed_lines(report))
-    lines.append("")
-    lines.extend(_provenance_lines(report))
+    if report.budget_status.get("budget") is not None or verbose:
+        lines.extend(_budget_lines(report))
+        lines.append("")
+    if verbose:
+        lines.extend(_diagnostics_lines(report))
+        lines.append("")
+        lines.extend(_speed_lines(report))
+        lines.append("")
+        lines.extend(_provenance_lines(report))
     return "\n".join(lines)
 
 
-def render_markdown(report: Report) -> str:
+def render_markdown(report: Report, verbose: bool = False) -> str:
     it = report.trip
     md: list[str] = []
     w = md.append
@@ -498,35 +507,23 @@ def render_markdown(report: Report) -> str:
           f"| {_gb(leg.required_gb)} GB |")
     w(f"| **Total** | **{it.total_days}** | **1–{it.span_days}** | **{_gb(it.required_gb)} GB** |")
     w("")
-    w("## Strategy comparison")
-    w("")
-    w("| Family | Total | Purchases | Data | Validity | Feasible |")
-    w("|--------|-------|-----------|------|----------|----------|")
-    for fam in ("local_only", "whole_trip", "hybrid"):
-        s = report.strategies.get(fam)
-        if s is None:
-            w(f"| {fam} | — | — | — | — | infeasible |")
-        else:
-            w(
-                f"| {fam} | {_money(s.total_cost, s.currency)} | {s.purchase_count} | ok | "
-                f"{'ok' if s.validity_ok else 'unverified'} | yes |"
-            )
-    w("")
     if report.purchase_frontier:
         w("## Cost of convenience")
         w("")
-        w("| eSIMs | Total | vs cheapest | Family | |")
-        w("|-------|-------|-------------|--------|---|")
+        w("| eSIMs | Total | vs cheapest | What it buys |")
+        w("|-------|-------|-------------|-------------|")
         for r in report.purchase_frontier:
             pct = r.get("vs_cheapest_pct")
             vs = "cheapest" if pct is None or abs(pct) < 0.05 else f"+{pct:.1f}%"
-            marks = []
+            s = report.ladder_strategies.get(r["purchases"])
+            buys = _buys_summary(s, report) if s is not None else "—"
             if r.get("buys_same_plan_twice"):
-                marks.append("buys one plan twice")
+                buys += " (one plan bought twice)"
             if r.get("recommended"):
-                marks.append("**recommended**")
-            w(f"| {r['purchases']} | {_money(r['total_cost'], r['currency'])} | {vs} "
-              f"| {r['family']} | {', '.join(marks)} |")
+                buys = "▸ " + buys
+            w(f"| {r['purchases']} | {_money(r['total_cost'], r['currency'])} | {vs} | {buys} |")
+        w("")
+        w("(▸ = recommended)")
         chosen = next((r for r in report.purchase_frontier if r.get("recommended")), None)
         fewest = report.purchase_frontier[0]
         if chosen is not None and fewest["purchases"] < chosen["purchases"]:
@@ -556,11 +553,6 @@ def render_markdown(report: Report) -> str:
                 w(f"- **{sp.plan.name}** — {sp.plan.provider}: {_money(sp.cost, s.currency)}, "
                   f"activate {_activation_text(sp, report)}, serves {_sp_legs(sp, report)}, "
                   f"{_plan_bits(sp.plan)}")
-            if s.assumptions:
-                w("")
-                w("Verification assumptions:")
-                for a in s.assumptions:
-                    w(f"- {a}")
             w("")
     w("## Recommendation")
     w("")
@@ -579,76 +571,75 @@ def render_markdown(report: Report) -> str:
             w(f"   - activate: {_activation_text(sp, report)}")
             w(f"   - serves: {_sp_legs(sp, report)}")
             w(f"   - price: {_money(sp.cost, rec.currency)} · {_plan_bits(sp.plan)}")
-        if rec.assumptions:
-            w("")
-            w("Verification assumptions:")
-            for a in rec.assumptions:
-                w(f"- {a}")
-    w("")
-    w("## Budget status")
-    w("")
     bs = report.budget_status
-    if bs.get("budget") is None:
-        w("No budget specified.")
-    elif bs.get("within_original"):
-        w(f"Within the original budget of {_money(bs['budget'], bs['currency'])}.")
-    else:
-        w(bs["message"])
-        w(f"- actual cost: {_money(bs['cost'], bs['currency'])}")
-        if bs.get("relaxed"):
-            w(f"- successful threshold: {_money(bs['threshold'], bs['currency'])}")
-            w(f"- overspend over original: {_money(bs['overspend'], bs['currency'])}")
-            w(f"- relaxation steps: {bs['steps']}")
-    w("")
-    w("## Diagnostics")
-    w("")
-    # Same lines as the console report - a second copy of this logic is how the two
-    # renderers ended up disagreeing about whether counts were truncated.
-    for line in _diagnostics_lines(report)[1:]:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        w(f"- {stripped.lstrip('✗? ')}" if line.startswith("    ") else stripped)
-    w("")
-    w("## Speed-cap requirement status")
-    w("")
-    s = report.speed_filter_status
-    w(f"- requirement: {s.get('requirement')}")
-    w(f"- mode: {s.get('mode')}"
-      + (" (VERIFIED)" if s.get("verified") else " (NOT verified against the site toggle)"))
-    w(f"- note: {s.get('note')}")
-    w("")
-    w("## Provenance & notes")
-    w("")
-    for n in report.notes:
-        w(f"- {n}")
-    w(
-        f"- FX: {report.fx.get('base')} -> {report.fx.get('currency')} "
-        f"rate {report.fx.get('rate')} "
-        f"({report.fx.get('source')}, date {report.fx.get('date')})"
-    )
-    w("")
-    w("### Snapshots")
-    w("")
-    for url, m in report.snapshot_manifest.items():
-        w(f"- `{m.get('source', '?')}` {url} — sha256 `{(m.get('sha256') or '')[:12]}…`")
-    w("")
+    if bs.get("budget") is not None or verbose:
+        w("")
+        w("## Budget status")
+        w("")
+        if bs.get("budget") is None:
+            w("No budget specified.")
+        elif bs.get("within_original"):
+            w(f"Within the original budget of {_money(bs['budget'], bs['currency'])}.")
+        else:
+            w(bs["message"])
+            w(f"- actual cost: {_money(bs['cost'], bs['currency'])}")
+            if bs.get("relaxed"):
+                w(f"- successful threshold: {_money(bs['threshold'], bs['currency'])}")
+                w(f"- overspend over original: {_money(bs['overspend'], bs['currency'])}")
+                w(f"- relaxation steps: {bs['steps']}")
+    if verbose:
+        w("")
+        w("## Diagnostics")
+        w("")
+        # Same lines as the console report - a second copy of this logic is how the two
+        # renderers ended up disagreeing about whether counts were truncated.
+        for line in _diagnostics_lines(report)[1:]:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            w(f"- {stripped.lstrip('✗? ')}" if line.startswith("    ") else stripped)
+        w("")
+        w("## Speed-cap requirement status")
+        w("")
+        s = report.speed_filter_status
+        w(f"- requirement: {s.get('requirement')}")
+        w(f"- mode: {s.get('mode')}"
+          + (" (VERIFIED)" if s.get("verified") else " (NOT verified against the site toggle)"))
+        w(f"- note: {s.get('note')}")
+        w("")
+        w("## Provenance & notes")
+        w("")
+        for n in report.notes:
+            w(f"- {n}")
+        w(
+            f"- FX: {report.fx.get('base')} -> {report.fx.get('currency')} "
+            f"rate {report.fx.get('rate')} "
+            f"({report.fx.get('source')}, date {report.fx.get('date')})"
+        )
+        w("")
+        w("### Snapshots")
+        w("")
+        for url, m in report.snapshot_manifest.items():
+            w(f"- `{m.get('source', '?')}` {url} — sha256 `{(m.get('sha256') or '')[:12]}…`")
+        w("")
     return "\n".join(md)
 
 
-def write_report(report: Report, out_path: Path | None, fmt: str = "console") -> None:
+def write_report(report: Report, out_path: Path | None, fmt: str = "console",
+                 verbose: bool = False) -> None:
     ext = {"markdown": "md", "json": "json", "console": "txt"}.get(fmt, "txt")
     if out_path is None:
         out_path = Path("report." + ext)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if fmt == "json":
+        # JSON is the machine-readable record: it stays complete regardless of --verbose.
         out_path.write_text(
             json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
         )
     elif fmt == "markdown":
-        out_path.write_text(render_markdown(report), encoding="utf-8")
+        out_path.write_text(render_markdown(report, verbose=verbose), encoding="utf-8")
     else:
-        out_path.write_text(render_console(report), encoding="utf-8")
+        out_path.write_text(render_console(report, verbose=verbose), encoding="utf-8")
 
 
 def render_json(report: Report) -> str:

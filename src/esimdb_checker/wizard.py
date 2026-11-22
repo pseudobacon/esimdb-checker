@@ -550,6 +550,9 @@ except Exception:  # pragma: no cover - Textual missing
 
 
 if _TEXTUAL:
+    from rich.console import Group
+    from rich.table import Table as RichTable
+    from rich.table import box as rich_box
     from rich.text import Text
 
     # Compact, non-clickable keyboard hints. One line per context. Esc is the back
@@ -622,6 +625,7 @@ if _TEXTUAL:
             self._esc_armed = False
             self._trip: Trip | None = None      # the trip being searched
             self._report: Any | None = None
+            self._detail_rung: int | None = None  # results page: None = ladder, n = detail
             self._search_error: str = ""
             self._search_note = ""                 # e.g. "Thailand (3 of 5)"
             self._elapsed = 0.0
@@ -721,6 +725,8 @@ if _TEXTUAL:
                 self._render_yesno()
             elif self.mode == "busy":
                 self._render_busy()
+            elif self.mode == "results":
+                self._render_results()
             else:
                 self._render_list()
 
@@ -1148,10 +1154,90 @@ if _TEXTUAL:
             self.result = WizardResult(trip=self._trip, cancelled=False,
                                        save_path=self.saved_path, report=self._report,
                                        search_error=self._search_error or None)
-            self.exit()
+            report = self._report
+            frontier = getattr(report, "purchase_frontier", None)
+            if self._search_error or report is None or not frontier:
+                # Nothing to browse (no report, an error, or a result without a ladder):
+                # leave and let the CLI report the outcome.
+                self.exit()
+                return
+            # Results page: the ladder table, with each rung openable in place.
+            self.mode = "results"
+            self._detail_rung = None
+            self.refresh_screen()
+
+        # -- results (post-search browsing) -------------------------------
+        def _render_results(self) -> None:
+            self._close_input()
+            from .report import _activation_text, _frontier_lines, _money, _sp_legs
+            report = self._report
+            if self._detail_rung is None:
+                head = ["Search finished - the cost of each number of eSIMs", ""]
+                head.extend(_frontier_lines(report))
+                if report.recommended is not None:
+                    self._ok(f"search finished: recommended is {report.recommended.family}")
+                n = len(report.purchase_frontier)
+                keys = " ".join(str(i) for i in range(1, n + 1))
+                self._hint(f"{keys} open a strategy    q exit")
+                self._st("body").update(Text("\n".join(head)))
+                return
+            row = next((r for r in report.purchase_frontier
+                        if r["purchases"] == self._detail_rung), None)
+            s = report.ladder_strategies.get(self._detail_rung)
+            if row is None or s is None:
+                self._detail_rung = None
+                return self.refresh_screen()
+            pct = row.get("vs_cheapest_pct")
+            vs = ("cheapest" if pct is None or abs(pct) < 0.05 else f"+{pct:.1f}% vs cheapest")
+            title = (f"{s.purchase_count} eSIM{'s' if s.purchase_count != 1 else ''} for "
+                     f"{_money(s.total_cost, s.currency)} ({vs}) — {s.family}")
+            t = RichTable(title=title, box=rich_box.SQUARE, expand=False)
+            t.add_column("#", justify="right", width=3)
+            t.add_column("Plan", overflow="fold")
+            t.add_column("Cost", justify="right")
+            t.add_column("Activate")
+            for i, sp in enumerate(s.plans, start=1):
+                t.add_row(
+                    str(i),
+                    Text(f"{sp.plan.name} — {sp.plan.provider}\n"
+                         f"serves: {_sp_legs(sp, report)}"),
+                    _money(sp.cost, s.currency),
+                    _activation_text(sp, report),
+                )
+            # Purchase links on their own lines: intact and copyable, never elided.
+            links = ["Purchase links:"]
+            links.extend(f"  {i}. {sp.url or '—'}"
+                         for i, sp in enumerate(s.plans, start=1))
+            self._ok(title)
+            self._hint("b/Esc back to the ladder    q exit")
+            self._st("body").update(Group(t, Text("\n".join(links))))
+
+        def _on_results_key(self, key: str, event) -> None:
+            report = self._report
+            rows = len(report.purchase_frontier) if report is not None else 0
+            if key == "q":
+                # Leave the interface; the CLI prints the report to the terminal.
+                event.stop()
+                self.exit()
+                return
+            if self._detail_rung is not None and key in ("b", "escape"):
+                event.stop()
+                self._detail_rung = None
+                self.refresh_screen()
+                return
+            if self._detail_rung is None and key.isdigit() and 1 <= int(key) <= rows:
+                event.stop()
+                self._detail_rung = int(key)
+                self.refresh_screen()
+                return
+            event.stop()
 
         def action_cancel(self) -> None:
             """Ctrl+C (and a double Esc) leaves with a clean cancellation."""
+            if self.mode == "results" and self.result is not None:
+                # The search is done - Ctrl+C just closes the browser, keeping the result.
+                self.exit()
+                return
             self.result = WizardResult(trip=None, cancelled=True, save_path=self.saved_path)
             self.exit()
 
@@ -1217,6 +1303,9 @@ if _TEXTUAL:
                 # query; Ctrl+C stays live (priority binding) to interrupt it.
                 if key != "ctrl+c":
                     event.stop()
+                return
+            if self.mode == "results":
+                self._on_results_key(key, event)
                 return
             if self._typing():
                 # Letters, digits, arrows and Backspace belong to the text field:
