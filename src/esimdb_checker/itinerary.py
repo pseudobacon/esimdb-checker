@@ -31,22 +31,36 @@ class CountryNotFoundError(StopError):
     """Raised when a destination cannot be resolved to a known country."""
 
 
-def parse_stop(token: str) -> tuple[str | None, int, int]:
-    """Parse one stop into (country_token_or_None, days, transfer_days).
+def parse_stop(token: str) -> tuple[str | None, int, int, tuple[str, ...]]:
+    """Parse one stop into (country_token_or_None, days, transfer_days, via_names).
 
     Forms:
-      'Spain 4'      -> ('Spain', 4, 0)
-      'united kingdom 5' (quoted) -> ('united kingdom', 5, 0)
-      '' or ' '      -> (None, 0, 0)   # 0-day transfer leg
-      'Spain 4 +2'   -> ('Spain', 4, 2)  # 4 charged days + 2 transfer days
+      'Spain 4'      -> ('Spain', 4, 0, ())
+      'united kingdom 5' (quoted) -> ('united kingdom', 5, 0, ())
+      '' or ' '      -> (None, 0, 0, ())   # 0-day transfer leg
+      'Spain 4 +2'   -> ('Spain', 4, 2, ())
+      'Indonesia 14 +1 via Vietnam'
+                   -> ('Indonesia', 14, 1, ('Vietnam',))
 
     Days must be a non-negative integer. '+N' (optional) is transfer days.
+    'via <country>[, <country>]' (optional) names layover countries on the leg's
+    transfer day(s): they cost no days or data, but a plan serving the leg must be
+    listed on their pages.
     """
     if token is None:
         token = ""
     raw = token.strip()
     if raw == "":
-        return None, 0, 0
+        return None, 0, 0, ()
+
+    # optional trailing 'via <countries>' marker (after the name, before or after +N)
+    via_names: tuple[str, ...] = ()
+    if " via " in raw:
+        raw, via_part = raw.rsplit(" via ", 1)
+        via_names = tuple(v.strip() for v in via_part.split(",") if v.strip())
+        if not via_names:
+            raise StopError(f"'via' needs at least one country name (got {token!r})")
+        raw = raw.strip()
 
     # optional trailing '+N' transfer-days marker
     transfer = 0
@@ -75,23 +89,33 @@ def parse_stop(token: str) -> tuple[str | None, int, int]:
         raise StopError(f"stop days must be an integer (got {days_s!r} in {token!r})") from exc
     if days < 0:
         raise StopError(f"stop days must be >= 0 (got {days})")
-    return name, days, transfer
+    return name, days, transfer, via_names
 
 
 def parse_stops(
     stops: Iterable[str], geo
-) -> list[tuple[Country | None, int, int]]:
-    """Parse and resolve stop tokens into ordered (country_or_None, days, transfer).
+) -> list[tuple[Country | None, int, int, tuple[Country, ...]]]:
+    """Parse and resolve stop tokens into ordered (country_or_None, days, transfer, via).
 
-    Empty stops become (None, 0, 0) transfer legs. Destination names are resolved
-    through the shared Geo resolver (exact/alias first, then a single unambiguous
-    substring candidate).
+    Empty stops become (None, 0, 0, ()) transfer legs. Destination and via names are
+    resolved through the shared Geo resolver (exact/alias first, then a single
+    unambiguous substring candidate).
     """
-    out: list[tuple[Country | None, int, int]] = []
+    out: list[tuple[Country | None, int, int, tuple[Country, ...]]] = []
     for token in stops:
-        name, days, transfer = parse_stop(token)
+        name, days, transfer, via_names = parse_stop(token)
+        via: tuple[Country, ...] = ()
+        for v in via_names:
+            c = geo.resolve_country(v)
+            if c is None:
+                cands = geo.candidates(v)
+                if len(cands) == 1:
+                    c = cands[0]
+                else:
+                    raise CountryNotFoundError(f"could not resolve via country {v!r}")
+            via += (c,)
         if name is None:
-            out.append((None, days, transfer))
+            out.append((None, days, transfer, via))
             continue
         c = geo.resolve_country(name)
         if c is None:
@@ -100,19 +124,20 @@ def parse_stops(
                 c = cands[0]
             else:
                 raise CountryNotFoundError(f"could not resolve destination {name!r}")
-        out.append((c, days, transfer))
+        out.append((c, days, transfer, via))
     return out
 
 
 def build_trip(
-    stops: Iterable[tuple[Country | None, int, int]],
+    stops: Iterable[tuple],
     daily_data_gb: float,
     currency: str,
     budget: float | None = None,
     transfer_data: float = 0.0,
     notes: Sequence[str] | None = None,
 ) -> Trip:
-    """Build a Trip from ordered (country_or_None, days, transfer_days) stops.
+    """Build a Trip from ordered stops of (country_or_None, days, transfer_days)
+    or (country_or_None, days, transfer_days, via_countries).
 
     Assigns each leg its start/end travel-day indices sequentially and computes
     required_gb = days * daily_data_gb (exact via Decimal). With transfer_data > 0,
@@ -127,7 +152,9 @@ def build_trip(
     frac = Decimal(str(transfer_data))
     legs: list[Leg] = []
     cursor = 1
-    for country, days, transfer in stops:
+    for stop in stops:
+        country, days, transfer = stop[0], stop[1], stop[2]
+        via = tuple(stop[3]) if len(stop) > 3 else ()
         if days < 0:
             raise StopError(f"days must be >= 0 (got {days})")
         cursor += transfer  # transfer days before this leg consume calendar slots
@@ -138,7 +165,7 @@ def build_trip(
         else:
             required = 0.0
         legs.append(Leg(country=country, days=days, start_day=start, end_day=end,
-                        required_gb=required, transfer_days=transfer))
+                        required_gb=required, transfer_days=transfer, via=via))
         if days > 0:
             cursor = end + 1
     if not legs:
@@ -176,10 +203,19 @@ def _validate_stops(stops: list[dict[str, Any]]) -> None:
             not isinstance(country_raw, str) or not country_raw.strip()
         ):
             raise StopError(f"stop #{i + 1} 'country' must be a string or null")
+        via_raw = s.get("via")
+        if via_raw is not None and (
+            not isinstance(via_raw, list)
+            or not all(isinstance(v, str) and v.strip() for v in via_raw)
+        ):
+            raise StopError(f"stop #{i + 1} 'via' must be a list of country names")
 
 
-def load_itinerary_file(path: Path) -> tuple[list[tuple[str | None, int, int]], dict[str, Any]]:
-    """Load a saved itinerary. Returns (stops [(country, days, transfer)], settings)."""
+StopRow = tuple[str | None, int, int, list[str]]
+
+
+def load_itinerary_file(path: Path) -> tuple[list[StopRow], dict[str, Any]]:
+    """Load a saved itinerary. Returns (stops [(country, days, transfer, via_names)], settings)."""
     text = path.read_text(encoding="utf-8")
     try:
         obj = json.loads(text)
@@ -191,7 +227,11 @@ def load_itinerary_file(path: Path) -> tuple[list[tuple[str | None, int, int]], 
     if not isinstance(stops_raw, list) or not stops_raw:
         raise StopError("itinerary file must contain a non-empty 'stops' list")
     _validate_stops(stops_raw)
-    stops = [(s.get("country"), int(s["days"]), int(s.get("transfer_days", 0))) for s in stops_raw]
+    stops = [
+        (s.get("country"), int(s["days"]), int(s.get("transfer_days", 0)),
+         [v.strip() for v in (s.get("via") or [])])
+        for s in stops_raw
+    ]
 
     settings: dict[str, Any] = {}
     if "daily_data_gb" in obj:
@@ -261,10 +301,22 @@ def load_itinerary_trip(
     Currency (and any override) is validated against the supported set.
     """
     stops, settings = load_itinerary_file(path)
-    resolved: list[tuple[Country | None, int, int]] = []
-    for name, days, transfer in stops:
+    resolved: list[tuple[Country | None, int, int, tuple[Country, ...]]] = []
+    for name, days, transfer, via_names in stops:
+        via: tuple[Country, ...] = ()
+        for v in via_names:
+            c = geo.resolve_country(v)
+            if c is None:
+                cands = geo.candidates(v)
+                if len(cands) == 1:
+                    c = cands[0]
+                else:
+                    raise CountryNotFoundError(
+                        f"could not resolve via country {v!r} from saved itinerary"
+                    )
+            via += (c,)
         if name is None:
-            resolved.append((None, days, transfer))
+            resolved.append((None, days, transfer, via))
             continue
         c = geo.resolve_country(name)
         if c is None:
@@ -275,7 +327,7 @@ def load_itinerary_trip(
                 raise CountryNotFoundError(
                     f"could not resolve destination {name!r} from saved itinerary"
                 )
-        resolved.append((c, days, transfer))
+        resolved.append((c, days, transfer, via))
 
     daily = settings["daily_data_gb"] if daily_data_gb is None else daily_data_gb
     cur = settings["currency"] if not currency else currency
@@ -303,6 +355,7 @@ def save_itinerary_file(trip: Trip, path: Path, overwrite: bool = False) -> Path
                 "country_slug": (leg.country.slug if leg.country else None),
                 "days": leg.days,
                 "transfer_days": leg.transfer_days,
+                **({"via": [c.name for c in leg.via]} if leg.via else {}),
             }
             for leg in trip.legs
         ],

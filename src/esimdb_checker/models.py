@@ -221,6 +221,8 @@ class Leg:
     end_day: int       # inclusive
     required_gb: float  # days * daily_rate, plus charged transfer days (see build_trip)
     transfer_days: int = 0  # uncharged transit/connectivity days before this leg
+    via: tuple[Country, ...] = ()  # layover countries on this leg's transfer day(s);
+    # any plan serving the leg must be listed on their pages (coverage gate)
 
     @property
     def is_transfer(self) -> bool:
@@ -314,6 +316,7 @@ class Trip:
                     "start_day": leg.start_day,
                     "end_day": leg.end_day,
                     "required_gb": _gb(leg.required_gb),
+                    "via": [c.name for c in leg.via],
                 }
                 for leg in self.legs
             ],

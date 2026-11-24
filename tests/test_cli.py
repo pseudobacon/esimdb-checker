@@ -85,6 +85,33 @@ def _itinerary_file(tmp_path, currency="GBP"):
     return save_itinerary_file(trip, tmp_path / "trip.itinerary.json", overwrite=True)
 
 
+def test_via_marker_parses_and_round_trips(tmp_path):
+    """'via <country>' on a stop: parsed, saved, reloaded, and attached to the leg."""
+    from esimdb_checker.itinerary import (
+        build_trip,
+        load_itinerary_file,
+        parse_stop,
+        save_itinerary_file,
+    )
+    from esimdb_checker.models import Country
+
+    assert parse_stop("Indonesia 14 +1 via Vietnam") == ("Indonesia", 14, 1, ("Vietnam",))
+    assert parse_stop("Spain 4") == ("Spain", 4, 0, ())
+    assert parse_stop("Spain 4 via France, Italy") == ("Spain", 4, 0, ("France", "Italy"))
+
+    vn = Country(code="VN", name="Vietnam", slug="vietnam")
+    idn = Country(code="ID", name="Indonesia", slug="indonesia")
+    trip = build_trip([(idn, 14, 1, (vn,))], daily_data_gb=1.0, currency="GBP",
+                      transfer_data=0.5)
+    assert trip.legs[0].via == (vn,)
+    path = save_itinerary_file(trip, tmp_path / "via.itinerary.json", overwrite=True)
+    doc = json.loads(path.read_text())
+    assert doc["stops"][0]["via"] == ["Vietnam"]
+
+    stops, _ = load_itinerary_file(path)
+    assert stops[0] == ("Indonesia", 14, 1, ["Vietnam"])
+
+
 def test_itinerary_notes_round_trip_and_show_only_verbose(tmp_path):
     """Free-form notes (e.g. a same-day connection costing no days) survive save/load
     and appear in the verbose report, never in the default one."""

@@ -65,6 +65,7 @@ class LegEntry:
     country: Country | None
     days: int = 0
     transfer_days: int = 0
+    via: tuple[Country, ...] = ()  # layover countries on this leg's transfer day(s)
 
     @property
     def is_transfer(self) -> bool:
@@ -77,6 +78,8 @@ class LegEntry:
         s = f"{self.country.name}: {self.days} day(s)"
         if self.transfer_days:
             s += f" (+{self.transfer_days} transfer)"
+        if self.via:
+            s += f" (via {'/'.join(c.name for c in self.via)})"
         return s
 
 
@@ -95,8 +98,10 @@ class WizardState:
     def charged(self) -> list[LegEntry]:
         return [leg for leg in self.legs if not leg.is_transfer and leg.days > 0]
 
-    def add_destination(self, country: Country, days: int, transfer: int = 0) -> None:
-        self.legs.append(LegEntry(country=country, days=days, transfer_days=transfer))
+    def add_destination(self, country: Country, days: int, transfer: int = 0,
+                        via: tuple[Country, ...] = ()) -> None:
+        self.legs.append(LegEntry(country=country, days=days, transfer_days=transfer,
+                                  via=via))
 
     def add_transfer(self, transfer_days: int) -> None:
         self.legs.append(LegEntry(country=None, days=0, transfer_days=transfer_days))
@@ -174,7 +179,7 @@ class WizardState:
         ok, err = self.can_build()
         if not ok:
             raise StopError(err)
-        stops = [(leg.country, leg.days, leg.transfer_days) for leg in self.legs]
+        stops = [(leg.country, leg.days, leg.transfer_days, leg.via) for leg in self.legs]
         return build_trip(stops, daily_data_gb=self.daily_data_gb,
                           currency=self.currency, budget=self.budget,
                           transfer_data=self.transfer_data, notes=self.notes)
@@ -233,7 +238,7 @@ def state_from_file(path: Path, geo) -> WizardState:
                         budget=settings.get("budget"),
                         transfer_data=settings.get("transfer_data", 0.0),
                         notes=tuple(settings.get("notes") or ()))
-    for name, days, transfer in stops:
+    for name, days, transfer, via_names in stops:
         if name is None:
             state.add_transfer(transfer)
             continue
@@ -244,7 +249,17 @@ def state_from_file(path: Path, geo) -> WizardState:
                 raise geo_mod.CountryNotFoundError(
                     f"could not resolve {name!r} from saved itinerary")
             c = cands[0]
-        state.add_destination(c, days, transfer)
+        via: tuple[Country, ...] = ()
+        for v in via_names:
+            vc = geo.resolve_country(v)
+            if vc is None:
+                vcands = geo.candidates(v)
+                if len(vcands) != 1:
+                    raise geo_mod.CountryNotFoundError(
+                        f"could not resolve via country {v!r} from saved itinerary")
+                vc = vcands[0]
+            via += (vc,)
+        state.add_destination(c, days, transfer, via)
     return state
 
 

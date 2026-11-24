@@ -261,8 +261,9 @@ def test_saved_itinerary_round_trips(tmp_path):
     assert result.save_path == path and path.exists()
 
     stops, settings = load_itinerary_file(path)
-    assert [(n, d) for n, d, _ in stops] == [("Spain", 4), ("France", 7)]
-    assert [t for _, _, t in stops] == [2, 0]
+    assert [(n, d) for n, d, _, _ in stops] == [("Spain", 4), ("France", 7)]
+    assert [t for _, _, t, _ in stops] == [2, 0]
+    assert [v for *_, v in stops] == [[], []]
     assert settings["currency"] == "USD"
     assert settings["daily_data_gb"] == 2.0
     assert settings["budget"] == 250

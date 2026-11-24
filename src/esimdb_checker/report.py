@@ -64,6 +64,17 @@ def _itinerary_summary_lines(report: Report) -> list[str]:
     state = _transfer_state(report).lstrip(", ")
     if state:
         lines.append(f"  • {state}")
+    for leg in it.legs:
+        if not leg.via:
+            continue
+        day = leg.start_day - leg.transfer_days
+        days_txt = (f"days {day}–{leg.start_day - 1}"
+                    if leg.transfer_days > 1 else f"day {day}")
+        lines.append(
+            f"  • via {'/'.join(v.name for v in leg.via)} on the {leg.country_name} "
+            f"flying {days_txt} — no extra days or data, but the plan serving that leg "
+            f"must be listed on its page"
+        )
     for note in it.notes:
         lines.append(f"  • note: {note}")
     return lines
@@ -95,10 +106,12 @@ def _boxed_table(headers: tuple[str, ...], rows: list[tuple[str, ...]],
 
 def _itinerary_table_lines(report: Report) -> list[str]:
     it = report.trip
-    rows = [
-        (leg.country_name, str(leg.days), leg.travel_days_label(), f"{_gb(leg.required_gb)} GB")
-        for leg in it.legs
-    ]
+    rows = []
+    for leg in it.legs:
+        dest = leg.country_name
+        if leg.via:
+            dest += f" (via {'/'.join(v.name for v in leg.via)})"
+        rows.append((dest, str(leg.days), leg.travel_days_label(), f"{_gb(leg.required_gb)} GB"))
     footer = ("TOTAL", str(it.total_days), f"1–{it.span_days}", f"{_gb(it.required_gb)} GB")
     return _boxed_table(("Destination", "Days", "Travel days", "Required data"),
                         rows, right=(1, 2, 3), footer=footer)

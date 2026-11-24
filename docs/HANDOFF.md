@@ -159,6 +159,10 @@ assumptions test was re-pointed at the JSON-side data (`test_expanded_row_assump
   e.g. a same-day connection): validated on load, round-tripped through `Trip.notes`,
   saved by `save_itinerary_file`, kept by the wizard, shown as a `note:` bullet in the
   `--verbose` report, and in `itinerary.notes` in the JSON.
+  A stop's optional `via` (also a `--stop '… via Country'` marker) names layover countries
+  on that leg's flying day: no days, no data, but they join the coverage gate — the plan
+  serving the leg must be listed on their pages (`_covers_leg` in the engine; the local
+  candidate path checks it too, which is where a via-only local plan used to slip through).
 
 ## Decisions worth inheriting
 

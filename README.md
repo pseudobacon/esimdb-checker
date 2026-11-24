@@ -137,7 +137,7 @@ esimdb-checker fetch "https://esimdb.com/api/client/countries"
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `destinations` (positional, 0–1) | single destination (name/code/slug), used with `--days` | — |
-| `--stop 'Country N'` | one itinerary leg; repeat for multiple (`''` = transfer leg, `'N +T'` = T uncharged transfer days) | — |
+| `--stop 'Country N'` | one itinerary leg; repeat for multiple (`''` = transfer leg, `'N +T'` = T uncharged transfer days, `'+T via Country'` = layover country on the flying day — see below) | — |
 | `--itinerary FILE` | load a saved itinerary (from the wizard) instead of `--stop` | — |
 | `--days` | length of the single positional destination | — |
 | `--daily-data` | expected data per destination day, in GB | `1.5` |
@@ -167,13 +167,25 @@ before any network work. The same global `--data-dir` / `--refresh` apply to `pl
 
 **Itinerary files** carry `stops` (each a `country`, `days`, `transfer_days`), plus
 `daily_data_gb`, `transfer_data`, `currency`, and optional `budget`. An optional `notes`
-list records trip facts that cost no days — e.g. a same-day connection that does not
-change the math but should not be forgotten. Notes round-trip through the file and the
-wizard, and appear as a `note:` bullet in the `--verbose` report:
+list records trip facts that cost no days, and a stop's optional `via` list names layover
+countries on its flying day. Both round-trip through the file and the wizard; both appear
+as bullets in the `--verbose` report (and `via` also in the legs table):
 
 ```json
-{ "notes": ["Day 4 (Taiwan to Indonesia): same-day connection via Hanoi — no extra day"] }
+{
+  "stops": [ { "country": "Indonesia", "days": 14, "transfer_days": 1, "via": ["Vietnam"] } ],
+  "notes": ["Day 4: same-day connection via Hanoi"]
+}
 ```
+
+**`via` (layover coverage).** A stop can name the country of a layover on its flying day:
+`--stop 'Indonesia 14 +1 via Vietnam'`. A layover costs **no days and no data** — the
+flying day is already charged — but the tool's coverage rule still applies: any plan that
+serves that leg must be **listed on the layover country's page too**, because that is the
+eSIM you would be using on the ground there. A cheaper local plan that doesn't cover the
+layover country is simply ineligible for the leg, which is what moves the ladder. If the
+layover is just a same-day connection with no time on the ground, you can omit `via` and
+note it instead.
 
 ### `recommend-wizard` (interactive)
 

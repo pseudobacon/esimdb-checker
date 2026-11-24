@@ -151,10 +151,19 @@ class RecommendationEngine:
                     j += 1
                 if pre > 0 or post > leg.end_day:
                     self._transfer_bounds[leg] = (leg.start_day - pre, post)
-        distinct_slugs = list(dict.fromkeys(leg.country.slug for _, leg in self.legs))
+        # via (layover) countries are fetched too: a plan serving a leg must be listed
+        # on them as well, so they are first-class pages, not an afterthought.
+        distinct_slugs: list[str] = []
+        for _, leg in self.legs:
+            distinct_slugs.append(leg.country.slug)
+            for v in leg.via:
+                distinct_slugs.append(v.slug)
+        distinct_slugs = list(dict.fromkeys(distinct_slugs))
         names = {}
         for _, leg in self.legs:
             names.setdefault(leg.country.slug, leg.country.name)
+            for v in leg.via:
+                names.setdefault(v.slug, v.name)
         for step, slug in enumerate(distinct_slugs, 1):
             if progress is not None:
                 progress(step, len(distinct_slugs), names.get(slug, slug))
@@ -183,7 +192,12 @@ class RecommendationEngine:
 
     # ---- predicates -------------------------------------------------------
     def _covers_leg(self, plan: Plan, leg: Leg) -> bool:
-        return leg.country.slug in self.plan_slugs.get(plan.id, set())
+        slugs = self.plan_slugs.get(plan.id, set())
+        if leg.country.slug not in slugs:
+            return False
+        # A layover country on this leg's transfer day is part of the coverage gate:
+        # the plan active that day (the one serving the leg) must work there too.
+        return all(v.slug in slugs for v in leg.via)
 
     def _speed_ok(self, plan: Plan) -> bool:
         """Default: keep plans that throttle only after their allowance is spent - one
@@ -290,6 +304,10 @@ class RecommendationEngine:
         for plan in self.plans_by_slug.get(leg.country.slug, []):
             if (not self._speed_ok(plan) or not self._provider_ok(plan)
                     or not self._purchasable(plan)):
+                continue
+            # Coverage gate: a leg with via countries also requires the plan to be
+            # listed on their pages (plans above are on the leg's page already).
+            if not self._covers_leg(plan, leg):
                 continue
             if not self._data_feasible(plan, [leg], trip.daily_data_gb):
                 continue
@@ -1195,7 +1213,10 @@ class RecommendationEngine:
             "Read-only research tool: no purchases, logins, or activations.",
             "Data source: esimdb.com observed client JSON API "
             "(not a documented/stable public API).",
-            "Coverage verified by a plan being listed on every leg's destination page.",
+            "Coverage verified by a plan being listed on every leg's destination page."
+            + (" Layover ('via') countries count as part of that leg's coverage: "
+               "a plan serving a leg must also be listed on each of its via pages."
+               if any(leg.via for leg in trip.legs) else ""),
             "Prices are as listed at capture time and may change; confirm before purchase.",
             f"Requested currency: {trip.currency}; ranking, budget, and totals "
             "all use this currency.",

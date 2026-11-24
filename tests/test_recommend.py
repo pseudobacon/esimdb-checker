@@ -30,6 +30,7 @@ from esimdb_checker.report import render_console
 ES = Country(code="ES", name="Spain", slug="spain", region="europe")
 FR = Country(code="FR", name="France", slug="france", region="europe")
 JP = Country(code="JP", name="Japan", slug="japan", region="asia")
+VN = Country(code="VN", name="Vietnam", slug="vietnam", region="asia")
 A = make_provider("A", "AlphaSim", "alphasim", 300)
 B = make_provider("B", "BetaNet", "betanet", 200)
 J = make_provider("J", "JapanTel", "japantel", 150)
@@ -852,3 +853,50 @@ def test_activation_lead_days_defaults_to_installing_the_day_before(tmp_path):
     assert two.recommended.plans[0].activation_day == -1
     assert "activation: 2 days before the first arrival each plan serves" in \
         render_console(two, verbose=True)
+
+
+# ---------------------------------------------------------------------------
+# via (layover) countries: part of the coverage gate for the leg they ride on
+# ---------------------------------------------------------------------------
+def test_via_country_must_be_listed_for_the_serving_plan(tmp_path):
+    """A leg with a flying-day layover in a second country: the plan that pays for
+    that leg must be listed on the layover country's page, not just the leg's own."""
+    from esimdb_checker.itinerary import build_trip
+
+    # Only plan on the destination page AND the via page is the shared one; the
+    # cheaper local-only plan is listed on the destination page but not the via page.
+    shared = entry("eu-shared", A, "Europe 10GB/30Days", 10000, 30, 12.0)
+    local_only = entry("es-local", B, "Spain 10GB/30Days", 10000, 30, 5.0)
+    payloads = [
+        ("spain", build_plans_payload([shared, local_only])),
+        ("france", build_plans_payload([shared])),
+    ]
+    # Leg: Spain 5 days + 1 transfer/flying day, via France (the layover country).
+    trip = build_trip([(ES, 5, 1, (FR,))], daily_data_gb=1.0, currency="USD")
+    assert trip.legs[0].via == (FR,)
+    rep = _run(tmp_path, payloads, trip)
+    # The cheaper Spain-only plan cannot be used because it is not listed on the
+    # via (France) page; the shared Europe plan must be the pick.
+    assert rep.recommended is not None
+    bought = {p.plan.id for p in rep.recommended.plans}
+    assert "es-local" not in bought, "a plan not listed on the via page was used"
+    assert "eu-shared" in bought
+
+
+def test_via_country_does_not_cost_extra_days_or_data(tmp_path):
+    """A via country adds no charged days and no data; it only gates coverage."""
+    from esimdb_checker.itinerary import build_trip
+
+    shared = entry("eu-shared", A, "Europe 10GB/30Days", 10000, 30, 12.0)
+    payloads = [
+        ("spain", build_plans_payload([shared])),
+        ("france", build_plans_payload([shared])),
+    ]
+    plain = build_trip([(ES, 5, 1)], daily_data_gb=1.0, currency="USD")
+    with_via = build_trip([(ES, 5, 1, (FR,))], daily_data_gb=1.0, currency="USD")
+    # Same span, same required data: via is a coverage constraint, not a cost.
+    assert plain.span_days == with_via.span_days
+    assert plain.required_gb == with_via.required_gb
+    rep = _run(tmp_path, payloads, with_via)
+    assert rep.recommended is not None
+    assert rep.recommended.total_cost == 12.0
