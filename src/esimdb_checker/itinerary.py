@@ -13,7 +13,7 @@ Repeated visits to the same country are distinct legs.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -110,6 +110,7 @@ def build_trip(
     currency: str,
     budget: float | None = None,
     transfer_data: float = 0.0,
+    notes: Sequence[str] | None = None,
 ) -> Trip:
     """Build a Trip from ordered (country_or_None, days, transfer_days) stops.
 
@@ -156,7 +157,8 @@ def build_trip(
         t = legs[target]
         legs[target] = replace(t, required_gb=t.required_gb + charge)
     return Trip(legs=tuple(legs), daily_data_gb=daily_data_gb,
-                currency=currency.upper(), budget=budget, transfer_data=float(transfer_data))
+                currency=currency.upper(), budget=budget, transfer_data=float(transfer_data),
+                notes=tuple(str(n).strip() for n in (notes or ()) if str(n).strip()))
 
 
 # ---- itinerary file I/O ---------------------------------------------------
@@ -229,6 +231,18 @@ def load_itinerary_file(path: Path) -> tuple[list[tuple[str | None, int, int]], 
     if cur_err is not None:
         raise StopError(f"itinerary file has an invalid currency {effective!r}: {cur_err}")
     settings["currency"] = code
+
+    # Optional free-form notes (e.g. a same-day connection that costs no days):
+    # validated, kept, and echoed back in the verbose report — never silently dropped.
+    raw_notes = obj.get("notes")
+    if raw_notes is None:
+        settings["notes"] = []
+    elif isinstance(raw_notes, list) and all(
+        isinstance(n, str) and n.strip() for n in raw_notes
+    ):
+        settings["notes"] = [n.strip() for n in raw_notes]
+    else:
+        raise StopError("'notes' must be a list of non-empty strings")
     return stops, settings
 
 
@@ -275,7 +289,7 @@ def load_itinerary_trip(
     if cur_err is not None:
         raise StopError(f"invalid currency {cur!r}: {cur_err}")
     return build_trip(resolved, daily_data_gb=daily, currency=code, budget=bud,
-                      transfer_data=tdata)
+                      transfer_data=tdata, notes=settings.get("notes"))
 
 
 def save_itinerary_file(trip: Trip, path: Path, overwrite: bool = False) -> Path:
@@ -298,6 +312,8 @@ def save_itinerary_file(trip: Trip, path: Path, overwrite: bool = False) -> Path
     }
     if trip.budget is not None:
         doc["budget"] = {"amount": str(_gb(trip.budget)), "currency": trip.currency}
+    if trip.notes:
+        doc["notes"] = list(trip.notes)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return path

@@ -64,6 +64,8 @@ def _itinerary_summary_lines(report: Report) -> list[str]:
     state = _transfer_state(report).lstrip(", ")
     if state:
         lines.append(f"  • {state}")
+    for note in it.notes:
+        lines.append(f"  • note: {note}")
     return lines
 
 

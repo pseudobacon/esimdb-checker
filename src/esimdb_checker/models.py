@@ -260,6 +260,7 @@ class Trip:
     currency: str
     budget: float | None = None  # total budget in `currency`, or None (unbounded)
     transfer_data: float = 0.0   # fraction of the daily need a transfer/flying day uses (0..1)
+    notes: tuple[str, ...] = ()  # free-form provenance (e.g. same-day connections)
 
     @property
     def total_days(self) -> int:
@@ -318,6 +319,7 @@ class Trip:
             ],
             "daily_data_gb": _gb(self.daily_data_gb),
             "transfer_data": _gb(self.transfer_data),
+            "notes": list(self.notes),
             "currency": self.currency,
             "budget": _gb(self.budget) if self.budget is not None else None,
             "total_days": self.total_days,

@@ -85,6 +85,50 @@ def _itinerary_file(tmp_path, currency="GBP"):
     return save_itinerary_file(trip, tmp_path / "trip.itinerary.json", overwrite=True)
 
 
+def test_itinerary_notes_round_trip_and_show_only_verbose(tmp_path):
+    """Free-form notes (e.g. a same-day connection costing no days) survive save/load
+    and appear in the verbose report, never in the default one."""
+    from esimdb_checker.itinerary import (
+        StopError,
+        build_trip,
+        load_itinerary_file,
+        save_itinerary_file,
+    )
+    from esimdb_checker.models import Country, Report
+    from esimdb_checker.report import render_console
+
+    vn = Country(code="VN", name="Vietnam", slug="vietnam")
+    note = "same-day connection via Hanoi, no extra day"
+    trip = build_trip([(vn, 3, 0)], daily_data_gb=1.0, currency="EUR", notes=[note])
+    path = save_itinerary_file(trip, tmp_path / "hanoi.itinerary.json", overwrite=True)
+    assert json.loads(path.read_text())["notes"] == [note]
+
+    _, settings = load_itinerary_file(path)
+    assert settings["notes"] == [note]
+
+    # A notes key that is not a list of strings is a clean error, not a crash.
+    bad = tmp_path / "bad.itinerary.json"
+    bad.write_text(json.dumps({"stops": [{"country": "Vietnam", "days": 3}],
+                               "daily_data_gb": 1.0, "currency": "EUR",
+                               "notes": "nope"}))
+    try:
+        load_itinerary_file(bad)
+        raise AssertionError("expected StopError")
+    except StopError as e:
+        assert "notes" in str(e)
+
+    # Report: the note is a verbose bullet; the default output stays clean.
+    rep = Report(
+        trip=trip, generated_at="2026-01-01T00:00:00+00:00", source_urls=[],
+        snapshot_manifest={}, fx={}, recommended=None,
+        strategies={}, budget_status={"budget": None}, diagnostics={},
+        totals={}, speed_filter_status={}, notes=[],
+    )
+    assert note in render_console(rep, verbose=True)
+    assert note not in render_console(rep)
+
+
+
 def test_budget_without_a_currency_belongs_to_the_itinerary(tmp_path, capsys):
     # --itinerary carries its own currency, which is not the --currency default. The
     # budget used to be assumed to be in the default, which invented a conversion and

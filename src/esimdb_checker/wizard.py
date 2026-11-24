@@ -89,6 +89,7 @@ class WizardState:
     budget: float | None = None  # None = no budget cap
     daily_data_gb: float | None = None
     transfer_data: float = 0.0   # fraction of the daily need used on flying days
+    notes: tuple[str, ...] = ()  # free-form notes from a loaded file (round-tripped)
 
     # ---- legs ----------------------------------------------------------
     def charged(self) -> list[LegEntry]:
@@ -176,7 +177,7 @@ class WizardState:
         stops = [(leg.country, leg.days, leg.transfer_days) for leg in self.legs]
         return build_trip(stops, daily_data_gb=self.daily_data_gb,
                           currency=self.currency, budget=self.budget,
-                          transfer_data=self.transfer_data)
+                          transfer_data=self.transfer_data, notes=self.notes)
 
     def summary_lines(self, show_data: bool = True) -> list[str]:
         """Compact leg table with travel-day spans (mirrors the report's days).
@@ -230,7 +231,8 @@ def state_from_file(path: Path, geo) -> WizardState:
     stops, settings = load_itinerary_file(path)  # validates currency, daily, budget
     state = WizardState(currency=settings["currency"], daily_data_gb=settings["daily_data_gb"],
                         budget=settings.get("budget"),
-                        transfer_data=settings.get("transfer_data", 0.0))
+                        transfer_data=settings.get("transfer_data", 0.0),
+                        notes=tuple(settings.get("notes") or ()))
     for name, days, transfer in stops:
         if name is None:
             state.add_transfer(transfer)

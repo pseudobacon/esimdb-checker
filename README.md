@@ -165,6 +165,16 @@ esimdb-checker fetch "https://esimdb.com/api/client/countries"
 before any network work. The same global `--data-dir` / `--refresh` apply to `plans`,
 `countries`, `resolve`, and `fetch`.
 
+**Itinerary files** carry `stops` (each a `country`, `days`, `transfer_days`), plus
+`daily_data_gb`, `transfer_data`, `currency`, and optional `budget`. An optional `notes`
+list records trip facts that cost no days — e.g. a same-day connection that does not
+change the math but should not be forgotten. Notes round-trip through the file and the
+wizard, and appear as a `note:` bullet in the `--verbose` report:
+
+```json
+{ "notes": ["Day 4 (Taiwan to Indonesia): same-day connection via Hanoi — no extra day"] }
+```
+
 ### `recommend-wizard` (interactive)
 
 An in-place terminal UI (built with [Textual](https://textual.textualize.io/)) for the same

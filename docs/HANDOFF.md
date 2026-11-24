@@ -155,6 +155,10 @@ assumptions test was re-pointed at the JSON-side data (`test_expanded_row_assump
   console and Markdown so the two renderers cannot disagree; `_frontier_table()` is the boxed
   ladder the console and the TUI both show.
 - `itinerary.py`, `models.py` — itinerary model and validation (shared by wizard and CLI).
+  Itinerary files also carry optional `notes` (free-form trip facts that cost no days,
+  e.g. a same-day connection): validated on load, round-tripped through `Trip.notes`,
+  saved by `save_itinerary_file`, kept by the wizard, shown as a `note:` bullet in the
+  `--verbose` report, and in `itinerary.notes` in the JSON.
 
 ## Decisions worth inheriting
 
